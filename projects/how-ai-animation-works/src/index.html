@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>一段动画，如何诞生 · 知识动画工坊</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark;--gold:#e6be78;--ivory:#eee6d5;--muted:#837f75;--cyan:#92bcb7}*{box-sizing:border-box}body{margin:0;background:#080a0b;color:var(--ivory);font-family:'Noto Serif SC',serif;height:100vh;display:grid;place-items:center;overflow:hidden}#shell{width:min(100vw,177.7778vh);position:relative}#film{width:1920px;height:1080px;transform-origin:top left;position:relative;overflow:hidden;background:radial-gradient(ellipse at 56% 44%,#252119 0%,#111311 38%,#090b0d 78%)}canvas{position:absolute;inset:0;width:1920px;height:1080px}#webgl{pointer-events:none}#grain{position:absolute;inset:0;pointer-events:none;opacity:.055;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath fill='%23fff' filter='url(%23n)' opacity='.7' d='M0 0h180v180H0z'/%3E%3C/svg%3E")}header{position:absolute;left:100px;right:100px;top:57px;display:flex;justify-content:space-between;align-items:center;font:17px 'IBM Plex Mono',monospace;letter-spacing:4px;color:#a9a391}header .brand{font:18px 'Noto Serif SC',serif;letter-spacing:6px}header i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--gold);margin-right:14px;box-shadow:0 0 16px #e6be7855}#copy{position:absolute;left:118px;top:178px;width:1050px;pointer-events:none}#eyebrow{color:var(--gold);font:17px 'IBM Plex Mono',monospace;letter-spacing:5px;margin-bottom:24px}h1{font-size:77px;line-height:1.4;letter-spacing:4px;font-weight:500;margin:0;text-shadow:0 2px 35px #e6be7810}h1 em{font-style:normal;color:var(--gold)}#desc{margin-top:21px;color:#9b998e;font-size:23px;letter-spacing:3px;line-height:1.8}#subtitle{position:absolute;bottom:111px;left:210px;right:210px;text-align:center;font-size:29px;letter-spacing:2px;line-height:1.7;text-shadow:0 2px 12px black}#subtitle span{transition:none}#chapter{position:absolute;bottom:52px;left:100px;right:100px;display:flex;gap:14px}#chapter div{height:2px;background:#ffffff16;flex:1;position:relative}#chapter div b{display:block;height:100%;background:var(--gold);box-shadow:0 0 9px #e6be7844}#controls{position:absolute;bottom:8px;left:25px;right:25px;display:flex;gap:14px;align-items:center;background:#111715e8;border:1px solid #ffffff16;padding:9px 15px;border-radius:8px;opacity:1;z-index:20;transition:opacity .2s;font:12px system-ui}#shell:hover #controls,#controls:focus-within{opacity:1}button{border:1px solid #ffffff25;border-radius:4px;color:#eee6d5;background:transparent;padding:6px 12px;cursor:pointer}input{flex:1;accent-color:#e6be78}#time{font:12px monospace;min-width:86px}#hint{color:#a5a799}.capture #controls,.capture #start{display:none}#start{position:absolute;z-index:15;left:50%;top:50%;transform:translate(-50%,-50%);padding:18px 28px;background:#101612ed;border:1px solid #e6be7888;border-radius:50px;font:16px system-ui;box-shadow:0 8px 40px #0008}#film{cursor:pointer}@media(max-width:600px){#hint{display:none}#controls{left:6px;right:6px;bottom:4px;gap:7px;padding:6px}button{padding:6px 8px}input{min-width:30px}#time{min-width:78px}}#error{position:absolute;bottom:160px;left:120px;color:#cda68b;font:20px system-ui}
+</style>
+</head>
+<body><div id="shell"><main id="film"><canvas id="back" width="1920" height="1080"></canvas><canvas id="webgl"></canvas><canvas id="front" width="1920" height="1080"></canvas><div id="grain"></div><header><div class="brand"><i></i>知识动画工坊</div><div>ANATOMY OF AN ANIMATION <span style="color:#686c63"> / 001</span></div></header><section id="copy"><div id="eyebrow"></div><h1></h1><div id="desc"></div></section><div id="subtitle"></div><div id="chapter"></div><div id="error"></div></main><button id="start" disabled>正在准备画面…</button><div id="controls"><button id="play">播放</button><button id="restart">重播</button><input id="seek" type="range" min="0" max="32" step="0.01" value="0" aria-label="播放进度"><span id="time">00:00 / 00:32</span><span id="hint">字幕样片 · 空格播放</span></div></div>
+<script type="module">
+import * as THREE from '../assets/vendor/three.module.min.js';
+const W=1920,H=1080,DURATION=32,TAU=Math.PI*2;
+const $=s=>document.querySelector(s),back=$('#back').getContext('2d'),ctx=$('#front').getContext('2d');
+const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x)),ease=x=>{x=clamp(x);return x*x*(3-2*x)},out=x=>1-Math.pow(1-clamp(x),3),mix=(a,b,t)=>a+(b-a)*t;
+const gold='#e6be78',ivory='#eee6d5',dim='#85887d',cyan='#92bcb7';
+const scenes=[
+{id:'hook',start:0,dur:6,title:'一段动画，<br>如何<em>诞生</em>？',desc:'从一个问题，到每一帧。',tag:'00 / THE QUESTION',voice:'让骰子动起来，只是开始。怎样让它讲清一个知识点？'},
+{id:'question',start:6,dur:6,title:'先有问题，<br>再有<em>画面</em>。',desc:'这一次，我们想解释「随机」。',tag:'01 / DEFINE',voice:'先确定观众要理解的问题：随机的结果，为什么也有规律？'},
+{id:'storyboard',start:12,dur:6,title:'把解释，拆成<em>镜头</em>。',desc:'发生 → 重复 → 发现规律',tag:'02 / STORYBOARD',voice:'把解释拆成三步：掷一次，重复许多次，再观察整体。'},
+{id:'code',start:18,dur:6,title:'AI 把分镜，<br>写成<em>代码</em>。',desc:'物体是什么，怎样动，何时出现。',tag:'03 / BUILD',voice:'AI 根据分镜写代码。代码描述物体，也描述它怎样随时间变化。'},
+{id:'layers',start:24,dur:6,title:'浏览器，把代码<em>画出来</em>。',desc:'不同的画面，交给合适的绘制方式。',tag:'04 / DRAW',voice:'浏览器执行代码：Three.js 画骰子，Canvas 画粒子，网页排文字。'},
+{id:'timeline',start:30,dur:6,title:'时间，组织<em>每个动作</em>。',desc:'同一时刻，始终回到同一个画面。',tag:'05 / CHOREOGRAPH',voice:'统一时间轴，让骰子、图形和字幕配合。拖回同一秒，画面也一致。'},
+{id:'render',start:36,dur:6,title:'一帧一帧，<br>成为<em>视频</em>。',desc:'绘制帧序列 → 编码 → 合入声音',tag:'06 / RENDER',voice:'按时间逐帧绘制，再编码成视频。旁白和音乐，也在这里合入。'},
+{id:'end',start:42,dur:6,title:'让知识，<br>变成<em>看得懂的变化</em>。',desc:'你决定讲什么。AI 帮你把它做出来。',tag:'07 / UNDERSTAND',voice:'好的知识动画，不只让物体动起来，更让观众看懂：为什么。'}
+];
+scenes.forEach(s=>s.render=t=>drawScene(s.id,t));window.scenes=scenes;
+$('#chapter').innerHTML=scenes.map(()=>'<div><b></b></div>').join('');
+let renderer;try{renderer=new THREE.WebGLRenderer({canvas:$('#webgl'),alpha:true,antialias:true,preserveDrawingBuffer:true});renderer.setSize(W,H,false);renderer.setPixelRatio(1);renderer.setClearColor(0,0);renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;}catch(e){$('#error').textContent='此浏览器无法启动 WebGL，请使用支持硬件加速的浏览器。';throw e;}
+const world=new THREE.Scene(),camera=new THREE.OrthographicCamera(-960,960,540,-540,.1,4000);camera.position.set(0,0,1800);camera.lookAt(0,0,0);
+world.add(new THREE.AmbientLight(0xffedcf,1.7));const key=new THREE.DirectionalLight(0xffecc5,3.6);key.position.set(-400,700,1000);world.add(key);const fill=new THREE.DirectionalLight(0xa4c5c8,1.1);fill.position.set(600,-100,500);world.add(fill);
+function face(n){let c=document.createElement('canvas');c.width=c.height=512;let g=c.getContext('2d');g.fillStyle='#e7d7b5';g.fillRect(0,0,512,512);let grad=g.createRadialGradient(160,100,10,256,256,400);grad.addColorStop(0,'#fff5db');grad.addColorStop(1,'#ccba92');g.fillStyle=grad;g.fillRect(0,0,512,512);const points={1:[[0,0]],2:[[-1,-1],[1,1]],3:[[-1,-1],[0,0],[1,1]],4:[[-1,-1],[1,-1],[-1,1],[1,1]],5:[[-1,-1],[1,-1],[0,0],[-1,1],[1,1]],6:[[-1,-1],[-1,0],[-1,1],[1,-1],[1,0],[1,1]]};for(let [x,y] of points[n]){g.beginPath();g.arc(256+x*133,256+y*133,34,0,TAU);g.fillStyle=n===1?'#a3452e':'#302b24';g.shadowColor='#fff7dc';g.shadowOffsetY=3;g.shadowBlur=3;g.fill();g.shadowBlur=0;}let tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;return new THREE.MeshStandardMaterial({map:tex,roughness:.42,metalness:.08});}
+// Subdivided box projected onto a rounded cube; textures remain on the six faces.
+const geom=new THREE.BoxGeometry(190,190,190,16,16,16);const pos=geom.attributes.position;for(let i=0;i<pos.count;i++){let p=new THREE.Vector3().fromBufferAttribute(pos,i),q=p.clone().clampScalar(-79,79),d=p.clone().sub(q).normalize().multiplyScalar(16);p.copy(q).add(d);pos.setXYZ(i,p.x,p.y,p.z);} // face textures retain sharp pips
+geom.computeVertexNormals();
+const die=new THREE.Group();die.add(new THREE.Mesh(geom,[face(3),face(4),face(2),face(5),face(1),face(6)]));world.add(die);
+function text(s,x,y,size=24,color=ivory,align='left',mono=false){ctx.fillStyle=color;ctx.font=`${size}px ${mono?'"IBM Plex Mono",monospace':'"Noto Serif SC",serif'}`;ctx.textAlign=align;ctx.fillText(s,x,y);}
+function line(x1,y1,x2,y2,color='#e6be7833',width=1){ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke();}
+function round(x,y,w,h,r=12,fill='#ffffff03',stroke='#e6be7833'){ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fillStyle=fill;ctx.fill();ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.stroke();}
+function circle(x,y,r,color=gold,alpha=1){ctx.globalAlpha=alpha;ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fillStyle=color;ctx.fill();ctx.globalAlpha=1;}
+function pip(n,x,y,size=42,alpha=1){ctx.save();ctx.globalAlpha=alpha;round(x-size/2,y-size/2,size,size,6,'#e8ddc3','#ffffff22');const points={1:[[0,0]],2:[[-1,-1],[1,1]],3:[[-1,-1],[0,0],[1,1]],4:[[-1,-1],[1,-1],[-1,1],[1,1]],5:[[-1,-1],[1,-1],[0,0],[-1,1],[1,1]],6:[[-1,-1],[-1,0],[-1,1],[1,-1],[1,0],[1,1]]};for(const [px,py]of points[n])circle(x+px*size*.25,y+py*size*.25,size*.065,n===1?'#a3452e':'#302b24');ctx.restore();}
+function bars(x,y,w,h,p,small=false){const vals=[.88,.98,1.06,.91,1.12,1.02];for(let i=0;i<6;i++){const bw=w/9,bh=h*vals[i]*out(p-i*.07);round(x+i*w/6,y-bh,bw,bh+1,3,i===5?'#92bcb755':'#e6be7844',i===5?'#92bcb7':'#e6be7888');if(!small)pip(i+1,x+i*w/6+bw/2,y+32,24);}line(x-10,y+1,x+w,y+1);}
+function dust(t){back.clearRect(0,0,W,H);for(let i=0;i<60;i++){let x=(i*7919%1920)+Math.sin(t*.12+i)*18,y=(i*3571%1080)-t*(i%3+1)*.7;y=(y+1080)%1080;back.beginPath();back.arc(x,y,i%4===0?2:1,0,TAU);back.fillStyle=`rgba(229,203,155,${.04+(i%5)*.012})`;back.fill();}const g=back.createRadialGradient(1300,600,10,1300,600,450);g.addColorStop(0,'#b48a3d09');g.addColorStop(1,'#0000');back.fillStyle=g;back.fillRect(0,0,W,H);}
+function pose(x,y,scale,rx,ry,rz=0){die.visible=true;die.position.set(x-960,540-y,0);die.scale.setScalar(scale);die.rotation.set(rx,ry,rz);}
+function drawScene(id,t){let p=t/6;die.visible=false;
+if(id==='hook'){
+const fall=out(t/1.65),bounce=t>1.65?Math.abs(Math.sin((t-1.65)*7))*Math.exp(-(t-1.65)*2.2)*75:0;
+const y=mix(390,615,fall)-bounce;pose(1320,y,1.5,mix(2.8, .4,out(t/2.5)),mix(-3.5,.6,out(t/2.5)),mix(.45,.08,out(t/2.5)));
+ctx.save();ctx.globalAlpha=.5*fall;ctx.beginPath();ctx.ellipse(1320,810,190,24,0,0,TAU);ctx.fillStyle='#000';ctx.fill();ctx.strokeStyle='#e6be7822';ctx.stroke();ctx.restore();
+let a=ease((t-3.1)/.8);ctx.globalAlpha=a;line(1120,440,1060,395);text('物体',1030,390,22,gold,'right');line(1480,650,1600,650);text('动作',1620,658,22,gold);line(1300,795,1300,853);text('每一帧，都来自代码',1320,894,20,dim,'center');ctx.globalAlpha=1;
+}else if(id==='question'){
+const q=ease(t/1.2);pose(mix(1320,1380,q),mix(615,530,q),mix(1.5,.78,q), .4,.6,.08);
+round(910,690,820,126,8,'#e6be7805','#e6be7855');text('随机的结果，为什么也有规律？',1320,766,34,ivory,'center');text('一个问题  /  一个解释目标',1320,862,19,dim,'center');
+for(let i=0;i<6;i++){let a=ease((t-.7-i*.13)/.65);pip(i+1,1060+i*105,622,38,a);}line(1380,565,1380,585);
+}else if(id==='storyboard'){
+const xs=[390,960,1530];for(let i=0;i<3;i++){const a=ease((t-i*.6)/.7);ctx.save();ctx.globalAlpha=a;round(xs[i]-240,470,480,340,10,'#ffffff02','#e6be7838');text('0'+(i+1),xs[i]-210,513,18,gold,'left',true);text(['掷一次','重复许多次','观察整体'][i],xs[i],768,30,ivory,'center');if(i===0){pip(2,xs[i],625-Math.sin(clamp(t/1.2)*Math.PI)*60,85);}if(i===1){for(let j=0;j<18;j++){let k=ease((t-.7-j*.055)/.4);pip([2,6,1,4,3,5,3,1,5,2,6,4,5,4,2,6,1,3][j],xs[i]-137+(j%6)*55,570+Math.floor(j/6)*53,35,k);}}if(i===1){const focus=Math.floor(t*3)%18;round(xs[i]-160+(focus%6)*55,546+Math.floor(focus/6)*53,46,46,7,'#ffffff00','#e6be78');}if(i===2)bars(xs[i]-130,690,280,130,(t-1.2)/1.4,true);ctx.restore();if(i<2){text('→',xs[i]+285,650,32,gold,'center');}}text('不是先找特效，而是先安排理解的顺序。',960,884,22,dim,'center');
+}else if(id==='code'){
+round(920,310,830,495,12,'#0b0e0ed9','#e6be7844');text('SCENE 01  /  掷一次',960,363,18,gold,'left',true);line(950,390,1720,390);const rows=[['const scene = {',ivory],['  object: "dice",',gold],['  start: 0,',dim],['  duration: 6,',dim],['  rotation: angleAt(t),',gold],['  position: positionAt(t)',cyan],['};',ivory]];rows.forEach((r,i)=>{let a=ease((t-.25-i*.32)/.45);ctx.globalAlpha=a*(i===Math.floor(t*1.2)%7?1:.65);text(String(i+1).padStart(2,'0'),960,444+i*44,17,'#53594f','left',true);text(r[0],1020,444+i*44,24,r[1],'left',true);ctx.globalAlpha=1;});pose(570,650,1.05, .4,.6+ease((t-2)/2)*.5,.08);line(730,650,875,650);text('→',882,660,28,gold,'center');text('分镜里的动作',570,850,22,dim,'center');
+}else if(id==='layers'){
+const xs=[385,960,1535];for(let i=0;i<3;i++){const a=ease((t-i*.4)/.8);ctx.save();ctx.globalAlpha=a;round(xs[i]-235,480,470,325,10,'#ffffff02','#e6be7833');text(['THREE.JS','CANVAS','HTML / CSS'][i],xs[i],535,18,gold,'center',true);text(['三维物体','大量图元','文字与排版'][i],xs[i],768,25,ivory,'center');if(i===0)pose(xs[i],635,.62, .4,.6+Math.sin(t*.6)*.25,.08);if(i===1){for(let j=0;j<90;j++){let angle=j*2.399,rad=Math.sqrt(j)*9;circle(xs[i]+Math.cos(angle+t*.15)*rad,640+Math.sin(angle+t*.15)*rad*.65,1+(j%3)*.7,j%4===0?cyan:gold,.2+ease((t-.5-j*.009)/.8)*.6);}}if(i===2){text('看见，',xs[i],628,46,ivory,'center');text('才能理解。',xs[i],691,39,gold,'center');}ctx.restore();}text('它们共同组成浏览器里的同一个画面。',960,882,22,dim,'center');
+}else if(id==='timeline'){
+let demo=t<3.6?clamp(t/3.6):t<4.6?mix(1,.38,ease((t-3.6))):.38;const y=mix(460,660,out(demo));pose(1330,y,1.05,mix(2.7, .4,out(demo)),mix(-2,.6,out(demo)),.08);ctx.beginPath();ctx.ellipse(1330,800,150,18,0,0,TAU);ctx.fillStyle='#0008';ctx.fill();
+const x=230+1460*demo;line(230,855,1690,855,'#e6be7855',2);for(let i=0;i<7;i++){line(230+i*1460/6,846,230+i*1460/6,864);text(i+'s',230+i*1460/6,899,18,dim,'center',true);}line(x,825,x,875,gold,3);circle(x,855,6);text((demo*6).toFixed(2)+' s',500,610,86,gold,'center',true);text(t<3.6?'向前播放':t<4.6?'回到同一时刻':'画面准确还原',500,675,25,ivory,'center');
+}else if(id==='render'){
+for(let i=0;i<7;i++){let a=ease((t-i*.17)/.6);ctx.save();ctx.globalAlpha=a;let x=170+i*234;round(x,500,210,160,6,'#e6be7805','#e6be7844');pip((i*3+1)%6+1,x+105,575,50);if(i===Math.floor(t*2)%7)round(x-3,497,216,166,6,'#ffffff00',gold);text('FRAME '+String(i+1).padStart(3,'0'),x+105,641,13,dim,'center',true);ctx.restore();}
+let q=ease((t-1.6)/1);line(960,690,960,730,'#e6be7855');round(590,738,740,72,5,'#92bcb708','#92bcb744');for(let i=0;i<85;i++){const h=(Math.sin(i*1.7)*.5+.5)*24+4;line(620+i*8,774-h*.5,620+i*8,774+h*.5,i<85*q?cyan:'#ffffff15',2);}text('帧序列  +  声音  →  MP4',960,874,25,gold,'center');text('本次为字幕样片，未添加音轨',960,922,17,dim,'center');
+}else{
+pose(1395,490,.70,.4,.6,.08);round(1120,350,550,415,12,'#ffffff02','#e6be7855');text('从「动起来」到「看明白」',1395,724,24,gold,'center');let q=ease((t-.4)/1);bars(1250,674,300,70,q,true);const labels=['问题','分镜','代码','画面','时间','视频'];labels.forEach((s,i)=>{let x=300+i*264;circle(x,870,4,i===5?cyan:gold);if(i<5)line(x+12,870,x+252,870);text(s,x,920,22,i===5?cyan:dim,'center');});
+}}
+// Each four-second shot has a lead phrase, an accented beat and a resolving beat.
+const phrases=[
+['一段动画，','如何<em>诞生</em>？','从问题，到画面。'],
+['先有<em>问题</em>。','再有<em>画面</em>。','你想让观众看懂什么？'],
+['掷<em>一次</em>。','再来<em>许多次</em>。','最后，<em>观察整体</em>。'],
+['分镜，','变成<em>代码</em>。','物体、动作、出现的时刻。'],
+['代码交给浏览器。','画面，<em>出现</em>。','三维 · 粒子 · 文字'],
+['向前，<em>播放</em>。','向后，<em>回看</em>。','每一秒，都可以重来。'],
+['一帧。再<em>一帧</em>。','连起来，成为<em>视频</em>。','再配上声音。'],
+['不只是<em>动起来</em>。','更要<em>看明白</em>。','这就是知识动画。']
+];
+const captions=[
+['先让一个物体动起来。','再用它，讲清一个问题。'],
+['先确定要解释的问题。','随机的结果，为什么也有规律？'],
+['一次结果、重复试验、观察整体。','理解，是这样一步步建立的。'],
+['AI 根据分镜编写代码。','把物体和动作，变成可执行的描述。'],
+['Three.js 绘制三维物体。','Canvas 画粒子，HTML 与 CSS 排文字。'],
+['动作和字幕，共用一条时间轴。','回到同一时刻，画面准确还原。'],
+['按时间逐帧绘制，编码成视频。','旁白与音乐，在合成时加入。'],
+['你决定讲什么，AI 帮你实现。','让变化，成为理解的过程。']
+];
+scenes.forEach((s,i)=>{s.start=i*4;s.dur=4;});
+function kineticTitle(index,t){
+ const beat=t<1.15?0:t<2.65?1:2,elapsed=t-[0,1.15,2.65][beat];
+ const title=$('h1'),key=index+':'+beat;
+ if(title.dataset.beat!==key){title.innerHTML=phrases[index][beat];title.dataset.beat=key;}
+ const enter=out(elapsed/.28),spring=1-Math.exp(-elapsed*11)*Math.cos(elapsed*15);
+ title.style.opacity=enter;title.style.transform=`translateY(${(1-enter)*22}px)`;
+ const em=title.querySelector('em');if(em){em.style.display='inline-block';em.style.transform=`scale(${.72+.28*spring})`;em.style.transformOrigin='center';}
+}
+let current=0,playing=false,origin=0,raf=0;
+function renderAt(time){
+ current=clamp(Number(time)||0,0,DURATION);
+ const s=scenes.find(s=>current>=s.start&&current<s.start+s.dur)||scenes.at(-1),index=scenes.indexOf(s),t=current-s.start;
+ dust(current);ctx.clearRect(0,0,W,H);s.render(t*1.5);renderer.render(world,camera);
+ $('#eyebrow').textContent=s.tag;kineticTitle(index,t);
+ $('#desc').textContent=s.desc;$('#desc').style.opacity=ease((t-.55)/.3)*.7;
+ $('#copy').style.opacity=1;$('#copy').style.transform='none';
+ $('#subtitle').textContent=captions[index][t<2?0:1];
+ document.querySelectorAll('#chapter b').forEach((el,i)=>el.style.width=clamp((current-scenes[i].start)/4)*100+'%');
+ $('#seek').value=current;$('#time').textContent=`00:${String(Math.floor(current)).padStart(2,'0')} / 00:32`;return current;
+}
+window.renderAt=renderAt;
+function pause(){playing=false;cancelAnimationFrame(raf);$('#play').textContent='播放';$('#start').style.display=capture?'none':'block';$('#start').textContent=current>=DURATION?'↻ 重新播放':'▶ 继续播放';}
+function tick(now){if(!playing)return;renderAt((now-origin)/1000);if(current>=DURATION){pause();return;}raf=requestAnimationFrame(tick);}
+function play(){if(current>=DURATION)current=0;$('#start').style.display='none';playing=true;origin=performance.now()-current*1000;$('#play').textContent='暂停';raf=requestAnimationFrame(tick);}
+$('#start').onclick=()=>play();$('#film').onclick=()=>{if(!capture)playing?pause():play();};$('#play').onclick=()=>playing?pause():play();$('#restart').onclick=()=>{pause();renderAt(0);play();};$('#seek').oninput=e=>{pause();renderAt(+e.target.value);};document.addEventListener('keydown',e=>{if(e.code==='Space'&&e.target.tagName!=='INPUT'){e.preventDefault();playing?pause():play();}if(e.code==='ArrowRight'){pause();renderAt(current+1);}if(e.code==='ArrowLeft'){pause();renderAt(current-1);}});
+function resize(){let s=Math.min(innerWidth/W,innerHeight/H);$('#shell').style.width=W*s+'px';$('#shell').style.height=H*s+'px';$('#film').style.transform=`scale(${s})`;}addEventListener('resize',resize);resize();
+const query=new URLSearchParams(location.search),capture=query.has('capture');if(capture)document.body.classList.add('capture');window.ready=(async()=>{await Promise.race([Promise.all([document.fonts.load('500 77px "Noto Serif SC"'),document.fonts.load('24px "IBM Plex Mono"')]),new Promise(resolve=>setTimeout(resolve,4000))]);renderAt(+(query.get('t')||0));$('#start').disabled=false;$('#start').textContent='▶ 点击播放';document.fonts.ready.then(()=>{if(!playing)renderAt(current);});return true;})();
+</script></body></html>
