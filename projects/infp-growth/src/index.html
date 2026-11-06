@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>INFP 的成长路线</title>
+<style>
+:root{--paper:#EEEBE4;--ink:#1F2E45;--moss:#6F8A5B}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#cfcac0;color:var(--ink);font-family:"Noto Serif SC","Songti SC","STSong",serif}
+#stage{position:absolute;left:50%;top:50%;transform-origin:0 0;background:var(--paper);overflow:hidden}
+#cv{position:absolute;inset:0;width:100%;height:100%}
+#sub,#note{display:none}
+#sub{position:absolute;left:8%;right:8%;text-align:center;font-weight:600;letter-spacing:.04em;line-height:1.5;will-change:opacity,transform}
+#note{position:absolute;font:500 22px "IBM Plex Mono",Menlo,monospace;letter-spacing:.06em;opacity:.55}
+#ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;align-items:center;padding:8px 12px;background:#1f2e45e6;color:#eee;font:12px Menlo,monospace;z-index:9}
+#ui button,#ui label{background:#2c3e58;color:#eee;border:1px solid #ffffff33;border-radius:4px;padding:5px 9px;cursor:pointer;white-space:nowrap}
+#ui input[type=range]{flex:1;min-width:40px}
+#ui input[type=file]{display:none}
+#cal{position:fixed;right:12px;bottom:52px;max-width:360px;max-height:50vh;overflow:auto;background:#fff;color:#1f2e45;font:12px/1.5 Menlo,monospace;padding:10px;border-radius:6px;white-space:pre;display:none;z-index:9}
+.capture #ui,.capture #cal{display:none!important}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas><div id="note"></div><div id="sub"></div></div>
+<div id="ui">
+  <button id="play">播放</button>
+  <input id="seek" type="range" min="0" max="156" step="0.01" value="0" aria-label="时间轴">
+  <span id="time">00:00</span>
+  <button id="ratio">9:16</button>
+  <label>载入音频<input id="audioFile" type="file" accept="audio/*"></label>
+  <button id="calBtn">校准</button>
+  <button id="expBtn">导出</button>
+  <span id="state">无音轨 · 未卡点</span>
+</div>
+<pre id="cal"></pre>
+<audio id="audio"></audio>
+<script>
+// ---- 锚点表（默认值，待校准）----
+// 依据 assets/A Careful Name.mp3 的响度分析估计（±2s）；07 落在 72s 的明显变响处
+const SEG=[['hook',0],['frame',12],['develop',25],['trait',36],['many',46],['loop',56],['stress',65],['open',72],['anchor',92],['relapse',108],['path',124],['end',146]];
+const FADE=[150,168];  // 音乐淡出区间；影片在 168s 结束
+const NAMES=['钩子','框架','发展','特质','可能性太多','回路','压力下的 Te','打开回路','Si 的锚点','反复','价值落成行动','边界与收尾'];
+let anchors=SEG.map(s=>s[1]),D=168;
+
+// ---- 工具 ----
+const $=s=>document.querySelector(s);
+const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
+const ease=x=>{x=clamp(x);return x*x*(3-2*x)};
+const out=x=>1-(1-clamp(x))**3;
+const mix=(a,b,p)=>a+(b-a)*p;
+const span=(p,a,b)=>clamp((p-a)/(b-a));
+function rng(seed){return()=>{seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function seg(t){let i=anchors.length-1;while(i>0&&t<anchors[i])i--;const s=anchors[i],e=i+1<anchors.length?anchors[i+1]:D;return{i,id:SEG[i][0],p:clamp((t-s)/(e-s)),s,e}}
+
+// ---- 画幅 ----
+const q=new URLSearchParams(location.search);
+if(q.has('capture'))document.body.classList.add('capture');
+let RATIO=q.get('ratio')==='16x9'?'16x9':'9x16';
+let W=1080,H=1920;const cv=$('#cv');let c=cv.getContext('2d');
+const V=()=>RATIO==='9x16';
+function layout(){
+  [W,H]=V()?[1080,1920]:[1920,1080];
+  cv.width=W;cv.height=H;
+  const st=$('#stage');st.style.width=W+'px';st.style.height=H+'px';
+  const ui=document.body.classList.contains('capture')?0:44;
+  const k=Math.min(innerWidth/W,(innerHeight-ui)/H);
+  st.style.transform=`scale(${k}) translate(-50%,-50%)`;
+  st.style.top=`calc(50% - ${ui/2}px)`;
+  const sub=$('#sub'),note=$('#note');
+  sub.style.top='auto';
+  if(V()){sub.style.bottom='21%';sub.style.fontSize='50px';note.style.top='13%';note.style.left='8%'}
+  else{sub.style.bottom='8%';sub.style.fontSize='40px';note.style.top='6%';note.style.left='5%'}
+  $('#ratio').textContent=V()?'9:16':'16:9';
+}
+
+// ---- 内容容器（后续段落块填充）----
+const CUES=[];   // [段落id, p起, p止, 字幕]
+const NOTES={};  // 段落id -> 角标小字
+const DRAW={};   // 段落id -> (g, t) => void
+
+// ---- 锚点覆盖：URL > 本地存储 ----
+(function(){
+  const valid=a=>Array.isArray(a)&&a.length===SEG.length&&a.every((x,i)=>typeof x==='number'&&(i===0||x>a[i-1]));
+  let a=null;
+  if(q.get('anchors'))a=q.get('anchors').split(',').map(Number);
+  else try{a=JSON.parse(localStorage.getItem('infp-anchors'))}catch(e){}
+  if(valid(a)){anchors=a;D=Math.max(D,a.at(-1)+8)}
+})();
+
+// ---- 渲染 ----
+let now=0;
+function placeholder(g){
+  const x=W/2,y=V()?H*.4:H*.45,r=18+6*Math.sin(g.p*Math.PI*2);
+  c.fillStyle='#1F2E45';c.beginPath();c.arc(x,y,r,0,7);c.fill();
+  c.font='28px Menlo,monospace';c.textAlign='center';c.globalAlpha=.4;
+  c.fillText(String(g.i).padStart(2,'0')+' · '+NAMES[g.i],x,y+90);c.globalAlpha=1;
+}
+// ---- 转场：把上一段的结束画面（p=1）画到离屏画布，用于交叉淡化 ----
+const XF=.8;let xc=null;
+function prevFrame(g){
+  if(!xc)xc=document.createElement('canvas');
+  if(xc.width!==W||xc.height!==H){xc.width=W;xc.height=H}
+  const main=c;c=xc.getContext('2d');
+  try{
+    c.setTransform(1,0,0,1,0,0);c.globalAlpha=1;c.fillStyle='#EEEBE4';c.fillRect(0,0,W,H);
+    const pi=g.i-1,ps={i:pi,id:SEG[pi][0],p:1,s:anchors[pi],e:g.s};
+    (DRAW[ps.id]||placeholder)(ps,g.s);
+  }finally{c=main}
+}
+// ---- 字幕与角标画进画布（导出可录到）----
+function drawSub(line,a,dy){
+  if(!line||a<=0)return;
+  const fs=V()?50:40,maxW=W*.84,lh=fs*1.5;
+  c.setTransform(1,0,0,1,0,0);
+  c.font='600 '+fs+'px "Noto Serif SC","Songti SC",serif';
+  const rows=[];let cur='';
+  for(const ch of line){if(cur&&c.measureText(cur+ch).width>maxW){rows.push(cur);cur=ch}else cur+=ch}
+  if(cur)rows.push(cur);
+  const bottom=H*(V()?.79:.92);
+  c.globalAlpha=a;c.fillStyle='#1F2E45';c.textAlign='center';c.textBaseline='alphabetic';
+  rows.forEach((r,i)=>c.fillText(r,W/2,bottom-(rows.length-1-i)*lh+dy));
+  c.globalAlpha=1;
+}
+function drawNote(s){
+  if(!s)return;
+  c.setTransform(1,0,0,1,0,0);
+  c.font='500 22px "IBM Plex Mono",Menlo,monospace';
+  c.globalAlpha=.55;c.fillStyle='#1F2E45';c.textAlign='left';c.textBaseline='top';
+  c.fillText(s,V()?W*.08:W*.05,V()?H*.13:H*.06);
+  c.globalAlpha=1;
+}
+function render(t){
+  now=clamp(Number(t)||0,0,D);const g=seg(now);
+  c.setTransform(1,0,0,1,0,0);c.globalAlpha=1;c.fillStyle='#EEEBE4';c.fillRect(0,0,W,H);
+  (DRAW[g.id]||placeholder)(g,now);
+  const xk=now-g.s;
+  if(g.i>0&&xk<XF){
+    prevFrame(g);
+    c.setTransform(1,0,0,1,0,0);c.globalAlpha=1-ease(xk/XF);c.drawImage(xc,0,0);c.globalAlpha=1;
+  }
+  paper();
+  const cue=CUES.find(k=>k[0]===g.id&&g.p>=k[1]&&g.p<k[2]);
+  const sub=$('#sub'),line=cue?cue[3]:'';
+  if(sub.textContent!==line)sub.textContent=line;
+  // 字幕：按时间淡入上浮、淡出（确定性，截帧一致）
+  let sa=0,sy=0;
+  if(cue){
+    const L=g.e-g.s,t0=g.s+cue[1]*L,t1=g.s+Math.min(cue[2],1)*L;
+    const a=clamp((now-t0)/.45),b=clamp((t1-now)/.35);
+    sa=Math.min(out(a),b);sy=16*(1-out(a));
+  }
+  drawSub(line,sa,sy);
+  drawNote(NOTES[g.id]||'');
+  $('#seek').max=D;$('#seek').value=now;
+  const f=x=>String(Math.floor(x/60)).padStart(2,'0')+':'+String(Math.floor(x%60)).padStart(2,'0');
+  $('#time').textContent=f(now)+' / '+f(D)+'  '+String(g.i).padStart(2,'0')+' '+NAMES[g.i];
+  const vol=1-ease(span(now,FADE[0],FADE[1]));
+  if(gain)gain.gain.value=vol;else if(hasAudio)audio.volume=vol;
+  return now;
+}
+window.renderAt=render;
+
+// ---- 播放 ----
+const audio=$('#audio');let playing=false,origin=0,raf=0,hasAudio=false;
+function clock(ms){return hasAudio&&!audio.paused?audio.currentTime:(ms-origin)/1000}
+function tick(ms){if(!playing)return;const t=clock(ms);render(t);if(t>=D){pause();return}raf=requestAnimationFrame(tick)}
+function play(){if(now>=D)now=0;playing=true;origin=performance.now()-now*1000;if(hasAudio){audio.currentTime=now;audio.play().catch(()=>{})}$('#play').textContent='暂停';raf=requestAnimationFrame(tick)}
+function pause(){playing=false;cancelAnimationFrame(raf);audio.pause();$('#play').textContent='播放'}
+$('#play').onclick=()=>playing?pause():play();
+$('#seek').oninput=e=>{const was=playing;pause();render(+e.target.value);if(was)play()};
+$('#ratio').onclick=()=>{RATIO=V()?'16x9':'9x16';layout();render(now)};
+addEventListener('resize',()=>{layout();render(now)});
+$('#audioFile').onchange=e=>{
+  const file=e.target.files[0];if(!file)return;
+  if(audio.src)URL.revokeObjectURL(audio.src);
+  audio.src=URL.createObjectURL(file);hasAudio=true;
+  audio.onloadedmetadata=()=>render(now);
+  $('#state').textContent=file.name+' · '+(localStorage.getItem('infp-anchors')?'已校准':'未校准');
+};
+
+// ---- 默认音轨：本地服务下自动载入项目 assets 中的音乐 ----
+audio.preload='auto';
+audio.src=encodeURI('../assets/A Careful Name.mp3');
+audio.addEventListener('canplay',()=>{if(!hasAudio){hasAudio=true;$('#state').textContent='默认音轨 · 估计锚点'}},{once:true});
+audio.addEventListener('error',()=>{if(!hasAudio)$('#state').textContent='无音轨 · 可手动载入'},{once:true});
+
+// ---- 导出：实时录制画布 + 音乐，生成 webm ----
+let gain=null,actx=null,adest=null;
+function audioGraph(){
+  if(actx)return;
+  actx=new AudioContext();const src=actx.createMediaElementSource(audio);
+  gain=actx.createGain();adest=actx.createMediaStreamDestination();
+  src.connect(gain);gain.connect(actx.destination);gain.connect(adest);
+}
+$('#expBtn').onclick=async()=>{
+  if(!hasAudio&&!confirm('没有音轨，只导出画面？'))return;
+  pause();
+  if(hasAudio){audioGraph();await actx.resume()}
+  const tracks=[...cv.captureStream(30).getVideoTracks(),...(adest?adest.stream.getAudioTracks():[])];
+  const mime=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(m=>MediaRecorder.isTypeSupported(m));
+  const rec=new MediaRecorder(new MediaStream(tracks),{mimeType:mime,videoBitsPerSecond:12e6});
+  const chunks=[];rec.ondataavailable=e=>e.data.size&&chunks.push(e.data);
+  rec.onstop=()=>{
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(chunks,{type:'video/webm'}));
+    a.download='infp-growth_'+RATIO+'.webm';a.click();$('#state').textContent='导出完成';
+  };
+  now=0;render(0);rec.start(1000);$('#state').textContent='导出中…请勿切换标签页';
+  play();
+  const wait=()=>{if(playing)return setTimeout(wait,200);rec.stop()};setTimeout(wait,500);
+};
+
+// ---- 校准模式：边听边按 M 标记下一段起点 ----
+let cal=null;
+function calShow(){
+  const rows=SEG.map((s,i)=>String(i).padStart(2,'0')+' '+NAMES[i].padEnd(8,'　')+' '+(cal.marks[i]!=null?cal.marks[i].toFixed(2):'…'));
+  $('#cal').textContent='校准中：段落开始时按 M，Esc 退出\n\n'+rows.join('\n')+(cal.done?'\n\n已保存。复制给 AI：\n'+JSON.stringify(cal.marks.map(x=>+x.toFixed(2))):'');
+}
+$('#calBtn').onclick=()=>{
+  if(!hasAudio){alert('先载入音频，再校准');return}
+  pause();now=0;cal={marks:[0],done:false};$('#cal').style.display='block';calShow();play();
+};
+
+// ---- 键盘 ----
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.code==='Space'){e.preventDefault();playing?pause():play()}
+  else if(e.code==='ArrowRight'){pause();render(now+2)}
+  else if(e.code==='ArrowLeft'){pause();render(now-2)}
+  else if(e.code==='KeyM'&&cal&&!cal.done){
+    cal.marks.push(audio.currentTime);
+    if(cal.marks.length===SEG.length){cal.done=true;anchors=cal.marks.slice();localStorage.setItem('infp-anchors',JSON.stringify(anchors));$('#state').textContent='已校准'}
+    calShow();
+  }
+  else if(e.code==='Escape'&&cal){cal=null;$('#cal').style.display='none'}
+});
+
+function boot(){
+  layout();
+  window.ready=document.fonts.ready.then(()=>render(+(q.get('t')||0)));
+  render(+(q.get('t')||0));
+}
+
+// ---- 字幕：[段落, p起, p止, 文本] ----
+CUES.push(
+ ['hook',.02,.3,'计划写满了，第一步还没开始。'],
+ ['hook',.32,.6,'一句话发出去前，改了很多遍：这样说，会不会不对？'],
+ ['hook',.62,.85,'累的时候，你对自己特别狠。'],
+ ['hook',.87,1.01,'这些，可能是同一套机制。'],
+ ['frame',.05,.25,'在荣格类型学中，INFP 有四个功能。'],
+ ['frame',.27,.7,'它们按熟练程度排成一列。'],
+ ['frame',.72,1.01,'最后一个，是最不熟练的那个。'],
+ ['develop',.02,.3,'这个框架里有一种看法：功能是一个个长出来的。'],
+ ['develop',.32,.55,'先是 Fi，然后是 Ne。'],
+ ['develop',.57,.84,'Si 和 Te，通常要更晚才慢慢长出来。'],
+ ['develop',.86,1.01,'所以那些「不熟练」，很多只是「还没到」。'],
+ ['trait',.03,.4,'Fi：先问，这符不符合我心里的标准。'],
+ ['trait',.42,1.01,'Ne：再看见很多种可能。'],
+ ['many',.03,.58,'每次想开始，又冒出更好的方案。'],
+ ['many',.6,1.01,'这个框架认为：想法来自 Ne，落地要靠最不熟练的 Te。'],
+ ['loop',.03,.58,'一句话，在心里来回审了很多遍：它是不是背叛了我在意的东西？'],
+ ['loop',.6,1.01,'社区里常说：这是 Fi-Si 回路，跳过了向外的 Ne。'],
+ ['stress',.3,1.01,'压力大时，平时最弱的 Te 会突然接管：挑剔、苛刻、急着纠错。'],
+ ['open',.03,.25,'社区里常说：走出回路，靠的不是更用力地想，而是向外走一步。'],
+ ['open',.27,.5,'先做一件小到能完成的事。'],
+ ['open',.52,1.01,'把「不」说出口，也是在保护你在意的东西。'],
+ ['anchor',.03,.3,'在回路里，Si 让你反复翻旧账。'],
+ ['anchor',.32,.6,'但它也可以是另一种样子：记得什么对你真正重要。'],
+ ['anchor',.62,1.01,'走远了，也有地方可以回来。'],
+ ['relapse',.03,.35,'成长不是一条直线。累的时候，还是会回到旧的圈里。'],
+ ['relapse',.37,.78,'不同的是，你认得出它了。'],
+ ['relapse',.8,1.01,'回来得，一次比一次快。'],
+ ['path',.03,.3,'这个框架认为，成长包括把弱的功能慢慢接上。'],
+ ['path',.32,.62,'Te 不再是压力下的批评者，而是把想法变成步骤的那只手。'],
+ ['path',.85,1.01,'价值，从用来评判自己，变成用来指路。'],
+ ['end',.03,.3,'类型是一种语言，不是一个判决。'],
+ ['end',.32,.6,'功能顺序与回路是理论描述，不是测量结果；MBTI 的重测稳定性一直存在争议。'],
+ ['end',.62,.9,'比起记住四个字母，更值得看见的，是你已经走出的那一步。']
+);
+// ---- 角标：理论模型提示从 01 末尾持续到 06 ----
+for(const id of ['develop','trait','many','loop','stress'])NOTES[id]='理论模型 · 非测量结果';
+NOTES.loop='社区说法 · Fi-Si 回路';
+NOTES.stress='类型学：劣势功能在压力下被放大';
+
+// @@CUES
+
+// ---- 共用绘图 ----
+const INK='#1F2E45',MOSS='#6F8A5B',RED='#B4473A';
+function dot(x,y,r,col=INK,a=1){c.globalAlpha=a;c.fillStyle=col;c.beginPath();c.arc(x,y,r,0,7);c.fill();c.globalAlpha=1}
+function ln(x1,y1,x2,y2,col=INK,w=3,a=1){c.globalAlpha=a;c.strokeStyle=col;c.lineWidth=w;c.lineCap='round';c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke();c.globalAlpha=1}
+function glow(x,y,r,a=1){const gr=c.createRadialGradient(x,y,0,x,y,r);gr.addColorStop(0,'rgba(31,46,69,.32)');gr.addColorStop(1,'rgba(31,46,69,0)');c.globalAlpha=a;c.fillStyle=gr;c.fillRect(x-r,y-r,2*r,2*r);c.globalAlpha=1}
+function txt(s,x,y,size,col=INK,a=1,mono=false){c.globalAlpha=a;c.fillStyle=col;c.textAlign='center';c.textBaseline='middle';c.font=(mono?'500 ':'600 ')+size+'px '+(mono?'"IBM Plex Mono",Menlo,monospace':'"Noto Serif SC","Songti SC",serif');c.fillText(s,x,y);c.globalAlpha=1}
+function fiPos(){return V()?[W/2,H*.4]:[W/2,H*.45]}
+// Fi 光点：光晕 + 环绕粒子 + 中心高光（粒子由 now 决定，确定性）
+function fi(x,y,r,a=1){
+  glow(x,y,r*5,a);
+  const R=rng(9);
+  for(let i=0;i<16;i++){
+    const rad=r*(1.8+R()*2.6),sp=(.25+R()*.5)*(R()<.5?-1:1),ph=R()*7,sz=1.4+R()*2.2;
+    const ang=ph+now*sp,br=.5+.5*Math.sin(now*1.7+ph);
+    dot(x+Math.cos(ang)*rad,y+Math.sin(ang)*rad*.92,sz,INK,a*(.25+.45*br));
+  }
+  dot(x,y,r,INK,a);dot(x-r*.3,y-r*.3,r*.35,'#EEEBE4',a*.18);
+}
+
+// ---- 质感：纸张颗粒与暗角（每帧最后叠加）----
+let grain=null;
+function makeGrain(){
+  const gc=document.createElement('canvas');gc.width=gc.height=256;
+  const x=gc.getContext('2d'),d=x.createImageData(256,256),R=rng(5);
+  for(let i=0;i<d.data.length;i+=4){const v=R()*255|0;d.data[i]=d.data[i+1]=d.data[i+2]=v;d.data[i+3]=20}
+  x.putImageData(d,0,0);grain=c.createPattern(gc,'repeat')||0;
+}
+function paper(){
+  if(grain===null)makeGrain();
+  c.setTransform(1,0,0,1,0,0);c.globalAlpha=1;
+  if(grain){c.fillStyle=grain;c.fillRect(0,0,W,H)}
+  const vg=c.createRadialGradient(W/2,H*.45,Math.min(W,H)*.35,W/2,H*.45,Math.max(W,H)*.75);
+  vg.addColorStop(0,'rgba(31,46,69,0)');vg.addColorStop(1,'rgba(31,46,69,.10)');
+  c.fillStyle=vg;c.fillRect(0,0,W,H);
+}
+
+// ---- 00 钩子：三个瞬间 ----
+DRAW.hook=(g,t)=>{
+  const p=g.p,[x,y]=fiPos();
+  // 拍 1：清单写满，第一格始终空着
+  const a1=span(p,0,.05)*(1-span(p,.28,.33));
+  if(a1>0){
+    const bx=V()?x-240:W*.5-240,by=V()?y-520:y-330;
+    for(let i=0;i<6;i++){
+      const k=out(span(p,.03+i*.035,.08+i*.035)),yy=by+i*62;
+      c.globalAlpha=a1*k;c.strokeStyle=INK;c.lineWidth=3;c.strokeRect(bx,yy-16,32,32);c.globalAlpha=1;
+      ln(bx+56,yy,bx+56+(220+((i*97)%160))*k,yy,INK,6,a1*k*.55);
+    }
+  }
+  // 拍 2：同一句话被改写三次
+  const a2=span(p,.3,.34)*(1-span(p,.58,.62));
+  if(a2>0){
+    const V3=['我觉得这样不太好','我只是觉得……也许','没关系，你决定就好'];
+    const q2=span(p,.33,.58)*3,i=Math.min(2,Math.floor(q2)),f=q2-i;
+    const s=V3[i].slice(0,Math.ceil(V3[i].length*clamp(f*2.2))),bx=x,by=V()?y-330:y-250;
+    c.globalAlpha=a2;c.strokeStyle=INK;c.lineWidth=3;c.beginPath();c.roundRect(bx-330,by-60,660,120,22);c.stroke();c.globalAlpha=1;
+    txt(s,bx,by,44,INK,a2);
+    if(f>.6&&i<2)ln(bx-260,by,bx-260+520*span(f,.6,.9),by,RED,4,a2*.8);
+  }
+  // 拍 3：画面收紧，红笔批注划向光点
+  const k3=span(p,.6,.66),fade=1-.4*span(p,.88,1);
+  if(k3>0){
+    const m=60*out(k3);c.globalAlpha=.12*k3;c.fillStyle=INK;
+    c.fillRect(0,0,W,m);c.fillRect(0,H-m,W,m);c.fillRect(0,0,m,H);c.fillRect(W-m,0,m,H);c.globalAlpha=1;
+    const R=rng(7);
+    for(let i=0;i<9;i++){
+      const ang=R()*Math.PI*2,d0=Math.max(W,H)*.6,d1=70+R()*40,pr=out(span(p,.62+i*.015,.74+i*.015));
+      const sx=x+Math.cos(ang)*d0,sy=y+Math.sin(ang)*d0,ex=x+Math.cos(ang)*d1,ey=y+Math.sin(ang)*d1;
+      if(pr>0)ln(sx,sy,mix(sx,ex,pr),mix(sy,ey,pr),RED,5,.75*fade);
+    }
+  }
+  // 光点：呼吸；拍 3 时被压小
+  fi(x,y,(16+3*Math.sin(t*2))*(1-.25*k3));
+};
+
+// ---- 四功能层级图（01、02 共用）----
+const FN=[['Fi','价值',1],['Ne','可能',.78],['Si','记忆',.6],['Te','执行',.45]];
+function fnSlot(i){const r=72*FN[i][2];return V()?[W/2,H*(.19+i*.11),r]:[W*(.26+i*.16),H*.42,r]}
+function drawFn(i,show,fill,dx=0,dy=0,flick=1){
+  if(show<=0)return;let[x,y,r]=fnSlot(i);x+=dx;y+=dy;const a=show*flick;
+  c.globalAlpha=a;c.strokeStyle=INK;c.lineWidth=3;c.beginPath();c.arc(x,y,r,0,7);c.stroke();c.globalAlpha=1;
+  if(fill>0){if(i===0)glow(x,y,r*2.6,a*fill);dot(x,y,r,INK,a*fill*(.35+.65*FN[i][2]))}
+  txt(FN[i][0],x,y,Math.round(r*.62),fill>.5?'#EEEBE4':INK,a,true);
+  if(V())txt(FN[i][1],x+r+90,y,34,INK,a*.7);else txt(FN[i][1],x,y+r+50,32,INK,a*.7);
+}
+
+// ---- 01 框架：四个功能 ----
+DRAW.frame=(g,t)=>{
+  const p=g.p,[fx,fy]=fiPos(),[sx,sy,sr]=fnSlot(0),k0=out(span(p,0,.25));
+  // Fi 从钩子的光点长成层级图的第一个圆
+  if(p<.25){fi(mix(fx,sx,k0),mix(fy,sy,k0),mix(16,sr*.5,k0))}
+  else drawFn(0,1,1);
+  for(let i=1;i<4;i++){
+    const show=out(span(p,.25+i*.12,.37+i*.12));
+    if(i<3){drawFn(i,show,show);continue}
+    // Te：偏离队列并闪烁，为 06 埋参照
+    const k=out(span(p,.7,.9)),fl=k>0&&p<.92?.75+.25*Math.sin(t*14):1;
+    drawFn(3,show,show,V()?46*k:0,V()?0:46*k,fl);
+  }
+  const na=span(p,.9,.97);
+  if(na>0)txt('理论模型，不是测量结果',V()?W/2:W*.5,V()?H*.6:H*.68,32,INK,na*.6,true);
+};
+
+// ---- 02 发展：功能逐步成熟 ----
+DRAW.develop=(g,t)=>{
+  const p=g.p,prog=.55*out(span(p,.02,.85));
+  const ne=out(span(p,.3,.5)),late=.5*out(span(p,.57,.8));
+  drawFn(0,1,1);drawFn(1,1,ne);drawFn(2,1,late);drawFn(3,1,late,V()?46:0,V()?0:46);
+  if(ne>0&&ne<1){const[x,y,r]=fnSlot(1);glow(x,y,r*3,Math.sin(ne*Math.PI))}
+  // 时间线：刻度停在中途，前方留白
+  const [x0,y0,x1,y1]=V()?[W*.18,H*.16,W*.18,H*.56]:[W*.16,H*.62,W*.84,H*.62];
+  ln(x0,y0,x1,y1,INK,2,.25);
+  ln(x0,y0,mix(x0,x1,prog),mix(y0,y1,prog),INK,4,.8);
+  for(let i=0;i<=10;i++){const u=i/10,tx=mix(x0,x1,u),ty=mix(y0,y1,u),L=V()?[12,0]:[0,12];ln(tx-L[0],ty-L[1],tx+L[0],ty+L[1],INK,2,u<=prog?.6:.2)}
+  dot(mix(x0,x1,prog),mix(y0,y1,prog),11,INK);
+};
+
+// ---- 分叉末端点（03、04 共用，固定种子）----
+function tips(){
+  const R=rng(11),[x,y]=fiPos(),o=[];
+  for(let i=0;i<14;i++){
+    const a=V()?-Math.PI*(.08+.84*R()):(R()-.5)*Math.PI*.8;
+    const L=V()?220+R()*280:300+R()*420;
+    o.push({x:x+Math.cos(a)*L,y:y+Math.sin(a)*L,mx:x+Math.cos(a)*L*.5+(R()-.5)*90,my:y+Math.sin(a)*L*.5+(R()-.5)*90,d:R()});
+  }
+  return o;
+}
+function curve(x0,y0,mx,my,x1,y1,k,col=INK,w=3,a=1){
+  if(k<=0)return;c.globalAlpha=a;c.strokeStyle=col;c.lineWidth=w;c.lineCap='round';c.beginPath();c.moveTo(x0,y0);
+  for(let s=1;s<=16;s++){const u=k*s/16,v=1-u;c.lineTo(v*v*x0+2*v*u*mx+u*u*x1,v*v*y0+2*v*u*my+u*u*y1)}
+  c.stroke();c.globalAlpha=1;
+}
+function ground(a=.3){if(V())ln(W*.1,H*.58,W*.9,H*.58,INK,2,a);else ln(W*.92,H*.12,W*.92,H*.88,INK,2,a)}
+
+// ---- 03 特质：Fi 与 Ne ----
+DRAW.trait=(g,t)=>{
+  const p=g.p,[x,y]=fiPos(),R0=60;
+  ground(.25*span(p,.4,.6));
+  // Fi：罗盘。两件事飘来，一件被吸收，一件被推开
+  glow(x,y,R0*3.2);
+  c.strokeStyle=INK;c.lineWidth=3;c.beginPath();c.arc(x,y,R0,0,7);c.stroke();
+  const items=[[.02,.2,-1,true],[.2,.38,1,false]];
+  let ang=-Math.PI/2;
+  for(const[a0,a1,side,keep]of items){
+    const k=span(p,a0,a1);if(k<=0||k>=1)continue;
+    const sx=x+side*W*.42,ix=k<.6?mix(sx,x+side*R0*1.8,out(k/.6)):(keep?mix(x+side*R0*1.8,x,span(k,.6,1)):mix(x+side*R0*1.8,sx,span(k,.6,1)));
+    const iy=y-R0*1.2,ia=keep?1-span(k,.85,1):1-span(k,.8,1);
+    c.globalAlpha=ia;c.strokeStyle=INK;c.lineWidth=3;c.strokeRect(ix-20,iy-20,40,40);c.globalAlpha=1;
+    // 指针先摆动，再定住
+    const sw=Math.exp(-6*k)*Math.sin(k*28);
+    ang=-Math.PI/2+side*(.6*sw+(k>.6?(keep?.25:-.25)*(1-span(k,.8,1)):0));
+  }
+  ln(x,y,x+Math.cos(ang)*R0*.8,y+Math.sin(ang)*R0*.8,INK,5);
+  dot(x,y,9);
+  // Ne：分叉生长，末端悬空
+  for(const b of tips()){
+    const k=out(span(p,.4+b.d*.3,.55+b.d*.3));
+    curve(x,y,b.mx,b.my,b.x,b.y,k,INK,3,.55);
+    if(k>=1){const bob=p>.85?4*Math.sin(t*2+b.d*9):0;dot(b.x,b.y+bob,10,INK,.85)}
+  }
+};
+
+// ---- 04 原生①：可能性太多 ----
+function groundPt(b){return V()?[b.x,H*.58-24]:[W*.92-24,b.y]}
+DRAW.many=(g,t)=>{
+  const p=g.p,[x,y]=fiPos(),T=tips(),still=p>.85;
+  ground(.25);
+  glow(x,y,180,.8);dot(x,y,14);
+  for(const b of T){curve(x,y,b.mx,b.my,b.x,b.y,1,INK,3,.3);dot(b.x,b.y+(still?0:3*Math.sin(t*2+b.d*9)),10,INK,.85)}
+  // 三次尝试：下落 → 接近地面 → 分裂成更多圆点弹回空中
+  [[.02,.22,3],[.22,.42,5],[.42,.6,7]].forEach(([a0,a1,n],j)=>{
+    const k=span(p,a0,a1);if(k<=0)return;
+    const b=T[(j*5+2)%T.length],[gx,gy]=groundPt(b);
+    const sx=mix(b.x,gx,.88),sy=mix(b.y,gy,.88);
+    if(k<.5){const f=ease(k/.5)*.88;dot(mix(b.x,gx,f),mix(b.y,gy,f),10,INK,.9);return}
+    const u=out(span(k,.5,1));
+    for(let i=0;i<n;i++){
+      const R=rng(100+j*10+i);
+      const tx=V()?b.x+(R()-.5)*460:b.x-80-R()*300;
+      const ty=V()?b.y-60-R()*300:b.y+(R()-.5)*460;
+      const bob=still?0:3*Math.sin(t*2.3+i+j);
+      dot(mix(sx,tx,u),mix(sy,ty,u)+bob,8,INK,.75);
+    }
+  });
+  // Te：在地面边缘淡淡出现，几乎看不清
+  const ta=.28*span(p,.6,.75);
+  if(ta>0){
+    const[tx,ty]=V()?[W*.82,H*.58+70]:[W*.92-70,H*.82];
+    c.globalAlpha=ta;c.strokeStyle=INK;c.lineWidth=3;c.beginPath();c.arc(tx,ty,32,0,7);c.stroke();c.globalAlpha=1;
+    txt('Te',tx,ty,22,INK,ta,true);
+  }
+};
+
+// ---- 回路环（05、06、07、09 共用）----
+function ringR(){return V()?W*.35:H*.3}
+function ringC(){const[x,y]=fiPos();return V()?[x,H*.38]:[W*.42,y]}
+// thick: 环宽；gap: 缺口弧度（0 为闭合）；gapAt: 缺口中心角
+function ring(thick,a=1,gap=0,gapAt=Math.PI/2){
+  if(thick<=0||a<=0)return;const[x,y]=ringC(),r=ringR();
+  c.globalAlpha=a;c.strokeStyle=INK;c.lineWidth=thick;c.lineCap='round';c.beginPath();
+  if(gap>0)c.arc(x,y,r,gapAt+gap/2,gapAt+Math.PI*2-gap/2);else c.arc(x,y,r,0,Math.PI*2);
+  c.stroke();c.globalAlpha=1;
+}
+function siPt(){const[x,y]=ringC(),r=ringR();return V()?[x,y-r]:[x-r,y]}
+
+// ---- 05 原生②：回路 ----
+DRAW.loop=(g,t)=>{
+  const p=g.p,[x0,y0]=fiPos(),[cx,cy]=ringC(),r=ringR(),T=tips();
+  const gather=out(span(p,0,.15));
+  // 末端点收拢到环上
+  T.forEach((b,i)=>{
+    const ang=i/T.length*Math.PI*2;
+    dot(mix(b.x,cx+Math.cos(ang)*r,gather),mix(b.y,cy+Math.sin(ang)*r,gather),10*(1-.6*gather),INK,.85*(1-span(p,.12,.2)));
+  });
+  // Ne 分叉线逐渐褪色、消失（重音：约 p .65）
+  const neA=.3*(1-span(p,.3,.65));
+  for(const b of T)curve(x0,y0,b.mx,b.my,b.x,b.y,1,INK,3,neA*(1-gather*.3));
+  // 环随绕行圈数变厚
+  const thick=mix(3,34,ease(span(p,.15,.9)));
+  ring(thick,.18+.5*span(p,.15,.9));
+  // Si 节点
+  const[sx,sy]=siPt();
+  dot(sx,sy,18,INK,span(p,.1,.2));txt('Si',sx,sy-(V()?46:0)+(V()?0:0),24,INK,span(p,.1,.2)*.8,true);
+  // 亮点绕行，越绕越快（相位是 p 的确定函数）
+  if(p>.15){
+    const ph=Math.PI*2*(3*span(p,.15,1)+5*span(p,.15,1)**2);
+    const base=V()?-Math.PI/2:Math.PI;
+    for(let k=0;k<6;k++){const a=base+ph-k*.12;dot(cx+Math.cos(a)*r,cy+Math.sin(a)*r,9-k,'#EEEBE4',.9-k*.13)}
+  }
+  // Fi 光点在环内变暗
+  const dim=1-.6*span(p,.6,1);
+  fi(mix(x0,cx,gather),mix(y0,cy,gather),14,dim);
+  // 角标式社区说法标签
+  const la=span(p,.6,.7);
+  if(la>0)txt('社区说法：Fi-Si 回路',cx,cy+r+(V()?90:70),30,INK,la*.7,true);
+};
+
+// ---- 尖锐 Te（06 使用，10 反转）----
+function teShape(x,y,r,sharp,col=INK,a=1){
+  const n=7;c.globalAlpha=a;c.fillStyle=col;c.beginPath();
+  for(let i=0;i<n*2;i++){const ang=i/(n*2)*Math.PI*2-Math.PI/2,rr=i%2?r*(1-.55*sharp):r;c.lineTo(x+Math.cos(ang)*rr,y+Math.sin(ang)*rr)}
+  c.closePath();c.fill();c.globalAlpha=1;
+  txt('Te',x,y,Math.round(r*.45),'#EEEBE4',a,true);
+}
+
+// ---- 06 原生③：压力下的 Te ----
+DRAW.stress=(g,t)=>{
+  const p=g.p,[cx,cy]=ringC(),frz=p>.85;
+  // 背景变灰 + 四周压缩
+  const sq=out(span(p,0,.3));
+  c.globalAlpha=.18*sq;c.fillStyle='#6b6a66';c.fillRect(0,0,W,H);c.globalAlpha=1;
+  const m=90*sq;c.globalAlpha=.16*sq;c.fillStyle=INK;
+  c.fillRect(0,0,W,m);c.fillRect(0,H-m,W,m);c.fillRect(0,0,m,H);c.fillRect(W-m,0,m,H);c.globalAlpha=1;
+  ring(34,.68);fi(cx,cy,14,.4);
+  // Te 从边缘冲到前方（重音 p≈.2）
+  const[sx,sy]=V()?[W*.82,H*.62]:[W*.88,H*.8];
+  const[tx,ty]=V()?[W/2,H*.56]:[W*.72,H*.5];
+  const k=out(span(p,.05,.22)),shake=frz?0:4*Math.sin(t*31)*span(p,.2,.3)*(1-span(p,.6,.85));
+  const tX=mix(sx,tx,k)+shake,tY=mix(sy,ty,k);
+  teShape(tX,tY,mix(32,110,k),out(span(p,.15,.3)));
+  // 红笔批注从 Te 射回中心光点
+  const R=rng(23);
+  for(let i=0;i<12;i++){
+    const d=R(),off=(R()-.5)*160,u=out(span(p,.3+d*.3,.45+d*.3));
+    if(u<=0)continue;
+    const ex=cx+(V()?off:0),ey=cy+(V()?0:off);
+    ln(tX,tY,mix(tX,ex,u),mix(tY,ey,u),RED,5,.75);
+    if(u>=1){const s=16;ln(ex-s,ey-s,ex+s,ey+s,RED,5,.8);ln(ex-s,ey+s,ex+s,ey-s,RED,5,.8)}
+  }
+  const fa=span(p,.85,.92);
+  if(fa>0)txt('不够好',cx,cy,48,RED,fa*.85);
+};
+
+// ---- 落地点（07、09、10 共用）：i=0 为第一个，1–3 为反复段新增 ----
+function landPt(i){if(i===0)return V()?[W*.5,H*.58]:[W*.92,H*.45];return V()?[W*(.44-.11*i),H*.58]:[W*.92,H*(.53+.11*i)]}
+function mossGlow(x,y,r,a=1){const gr=c.createRadialGradient(x,y,0,x,y,r);gr.addColorStop(0,'rgba(111,138,91,.55)');gr.addColorStop(1,'rgba(111,138,91,0)');c.globalAlpha=a;c.fillStyle=gr;c.fillRect(x-r,y-r,2*r,2*r);c.globalAlpha=1}
+function xMark(x,y,s,col,a){ln(x-s,y-s,x+s,y+s,col,5,a);ln(x-s,y+s,x+s,y-s,col,5,a)}
+
+// ---- 07 中阶：打开回路 ----
+DRAW.open=(g,t)=>{
+  const p=g.p,[cx,cy]=ringC(),r=ringR(),gapAt=V()?Math.PI/2:0;
+  // 背景由灰回到纸白
+  const grey=1-span(p,.75,1);
+  c.globalAlpha=.18*grey;c.fillStyle='#6b6a66';c.fillRect(0,0,W,H);c.globalAlpha=1;
+  ground(.25);
+  // 批注失去颜色、落下（与 06 同一种子，位置一致）
+  const R=rng(23),fall=ease(span(p,.02,.28));
+  for(let i=0;i<12;i++){
+    R();const off=(R()-.5)*160;
+    const ex=cx+(V()?off:0),ey=cy+(V()?0:off)+fall*H*.35;
+    xMark(ex,ey,16,p<.06?RED:'#9a9893',.8*(1-fall));
+  }
+  // 环：出现缺口 → 变薄 → 断成弧线
+  const gap=.45*out(span(p,0,.1))+2.2*ease(span(p,.75,1));
+  ring(mix(34,5,ease(span(p,.75,1))),.68*(1-.35*span(p,.75,1)),gap,gapAt);
+  const gx=cx+Math.cos(gapAt)*r,gy=cy+Math.sin(gapAt)*r;
+  mossGlow(gx,gy,90,out(span(p,0,.12))*(1-.5*span(p,.5,1)));
+  // 一根 Ne 线伸到地面，末端落地后变绿（重音 p≈.42）
+  const[lx,ly]=landPt(0),k=out(span(p,.08,.2));
+  if(k>0){
+    ln(gx,gy,mix(gx,lx,k),mix(gy,ly,k),INK,3,.6);
+    const landed=p>=.2;
+    if(landed)mossGlow(lx,ly,70,1-span(p,.2,.38)*.6);
+    dot(mix(gx,lx,k),mix(gy,ly,k),12,landed?MOSS:INK);
+  }
+  // 边界线：一道苔绿短墙，灰色批注撞上后停下
+  const wk=out(span(p,.5,.6));
+  if(wk>0){
+    if(V()){
+      const wx=lx+110;ln(wx,ly,wx,ly-110*wk,MOSS,7);
+      const ck=out(span(p,.56,.72));if(ck>0)xMark(mix(W*.96,wx+26,ck),ly-50,14,'#9a9893',.8);
+    }else{
+      const wy=ly-110;ln(lx,wy,lx-110*wk,wy,MOSS,7);
+      const ck=out(span(p,.56,.72));if(ck>0)xMark(lx-50,mix(H*.04,wy-26,ck),14,'#9a9893',.8);
+    }
+  }
+  // Fi 光点重新变亮
+  fi(cx,cy,mix(14,18,span(p,.6,1)),mix(.4,1,span(p,.55,1)));
+};
+
+// ---- Si 桩与边界线（08、09、10 共用）----
+function stakePt(){const[lx,ly]=landPt(0);return V()?[lx-130,ly-20]:[lx-20,ly+130]}
+function wall(a=1){const[lx,ly]=landPt(0);if(V())ln(lx+110,ly,lx+110,ly-110,MOSS,7,a);else ln(lx,ly-110,lx-110,ly-110,MOSS,7,a)}
+function stake(a=1){const[x,y]=stakePt();c.globalAlpha=a;c.fillStyle=INK;c.fillRect(x-20,y-20,40,40);c.globalAlpha=1;txt('Si',x,y,20,'#EEEBE4',a,true)}
+
+// ---- 08 Si 的锚点 ----
+DRAW.anchor=(g,t)=>{
+  const p=g.p,[cx,cy]=ringC(),gapAt=V()?Math.PI/2:0;
+  ground(.25);ring(5,.44,2.65,gapAt);wall();
+  const[lx,ly]=landPt(0);dot(lx,ly,12,MOSS);
+  // Si：从弧线脱离，下沉成为地面上的桩
+  const[s0x,s0y]=siPt(),[s1x,s1y]=stakePt(),k=ease(span(p,.02,.26));
+  if(k<1)dot(mix(s0x,s1x,k),mix(s0y,s1y,k),mix(18,12,k),INK,.9);
+  stake(span(p,.22,.3));
+  // Ne：探出去，再落回 Si 桩（重音：第一根回到桩，p≈.42）
+  const R=rng(31);
+  for(let i=0;i<5;i++){
+    const d=i/5,side=i%2?1:-1;
+    const fx=V()?cx+side*(160+R()*240):cx+160+R()*320;
+    const fy=V()?cy-240-R()*280:cy+side*(150+R()*240);
+    const kk=out(span(p,.3+d*.3,.42+d*.3));
+    curve(cx,cy,fx,fy,s1x,s1y,kk,INK,3,.5);
+    if(kk>=1)dot(s1x,s1y,30,INK,.06);
+  }
+  // 过去留下的淡色印记
+  for(let i=0;i<5;i++){
+    const a=span(p,.6+i*.04,.7+i*.04);if(a<=0)continue;
+    const ox=V()?-60-i*36:(i%2?-14:14)-10,oy=V()?(i%2?-8:8):60+i*36;
+    dot(s1x+ox,s1y+oy,6,INK,.22*a);
+  }
+  fi(cx,cy,18);
+};
+
+// ---- 09 反复：回来得更快 ----
+// 每次循环：[开始合拢, 完全闭合, 重新打开]，三次依次变短、变薄
+const CYC=[[0,.25,.42,18],[.5,.58,.68,11],[.76,.8,.86,6]];
+DRAW.relapse=(g,t)=>{
+  const p=g.p,[cx,cy]=ringC(),r=ringR(),gapAt=V()?Math.PI/2:0;
+  let closed=0,th=5;
+  for(const[a,b,e,w]of CYC){if(p<a)break;const k=ease(span(p,a,b))*(1-ease(span(p,b,e)));closed=k;th=mix(5,w,k)}
+  // 轻微收紧与变灰（比 06 轻，无红色）
+  c.globalAlpha=.1*closed;c.fillStyle='#6b6a66';c.fillRect(0,0,W,H);c.globalAlpha=1;
+  const m=40*closed;c.globalAlpha=.1*closed;c.fillStyle=INK;
+  c.fillRect(0,0,W,m);c.fillRect(0,H-m,W,m);c.fillRect(0,0,m,H);c.fillRect(W-m,0,m,H);c.globalAlpha=1;
+  ground(.25);stake();wall(.8);
+  const[l0x,l0y]=landPt(0);dot(l0x,l0y,12,MOSS);
+  ring(th,.44+.2*closed,2.65*(1-closed),gapAt);
+  // 每次打开后，新的苔绿点落地
+  const gx=cx+Math.cos(gapAt)*r,gy=cy+Math.sin(gapAt)*r;
+  CYC.forEach(([a,b,e],j)=>{
+    const k=out(span(p,e,e+.06));if(k<=0)return;
+    const[lx,ly]=landPt(j+1);
+    if(k<1)ln(gx,gy,mix(gx,lx,k),mix(gy,ly,k),INK,3,.5);
+    if(k>=1)mossGlow(lx,ly,60,1-span(p,e+.06,e+.2));
+    dot(mix(gx,lx,k),mix(gy,ly,k),12,k>=1?MOSS:INK);
+  });
+  fi(cx,cy,mix(18,14,closed),1-.5*closed);
+};
+
+// ---- 路径（10、11 共用）：先连起已有落地点，再向前延伸 ----
+function pathPts(){
+  const P=[landPt(3),landPt(2),landPt(1),landPt(0)];
+  const ext=V()?[[.78,.5],[.86,.4],[.8,.3],[.88,.22]]:[[.8,.32],[.88,.22],[.8,.12]];
+  return P.concat(ext.map(([a,b])=>[W*a,H*b]));
+}
+function pathFr(P){const L=[0];for(let i=1;i<P.length;i++)L.push(L[i-1]+Math.hypot(P[i][0]-P[i-1][0],P[i][1]-P[i-1][1]));return L.map(x=>x/L.at(-1))}
+// 按比例 k 画折线，返回末端位置
+function poly(P,F,k,col,w,a=1){
+  c.globalAlpha=a;c.strokeStyle=col;c.lineWidth=w;c.lineCap='round';c.lineJoin='round';c.beginPath();c.moveTo(P[0][0],P[0][1]);
+  let hx=P[0][0],hy=P[0][1];
+  for(let i=1;i<P.length;i++){
+    if(k>=F[i]){c.lineTo(P[i][0],P[i][1]);hx=P[i][0];hy=P[i][1];continue}
+    const u=(k-F[i-1])/(F[i]-F[i-1]);if(u>0){hx=mix(P[i-1][0],P[i][0],u);hy=mix(P[i-1][1],P[i][1],u);c.lineTo(hx,hy)}break;
+  }
+  c.stroke();c.globalAlpha=1;return[hx,hy];
+}
+
+// ---- 10 高阶：价值落成行动 ----
+DRAW.path=(g,t)=>{
+  const p=g.p,[cx,cy]=ringC(),gapAt=V()?Math.PI/2:0,P=pathPts(),F=pathFr(P),f3=F[3];
+  ground(.25);ring(5,.44*(1-span(p,0,.25)),2.65,gapAt);
+  stake(1-.5*span(p,.6,1));wall(.8*(1-.5*span(p,.6,1)));
+  // 路径：0–.3 连起已有落地点；.32–.85 由 Te 带着向前延伸
+  const k=p<.3?f3*ease(span(p,.02,.28)):mix(f3,1,ease(span(p,.32,.85)));
+  const[hx,hy]=poly(P,F,k,MOSS,6,.85);
+  P.forEach(([x,y],i)=>{if(i<4||k>=F[i]-1e-6){dot(x,y,12,MOSS);if(i>=4&&k-F[i]<.04)mossGlow(x,y,60,.8)}});
+  // Te：从尖锐多边形变回圆形，成为路径的步伐（重音 p≈.4）
+  const ta=span(p,.15,.25);
+  if(ta>0){
+    const mv=ease(span(p,.3,.4)),[s0,s1]=[P[3][0]+(V()?60:-60),P[3][1]-60];
+    const tx=p<.4?mix(s0,hx,mv):hx,ty=p<.4?mix(s1,hy,mv):hy;
+    teShape(tx,ty,mix(46,32,mv),1-out(span(p,.32,.45)),INK,ta);
+  }
+  // Ne：重新出现，每根都连到路径上的节点
+  for(let i=4;i<P.length;i++){
+    const kk=out(span(p,.6+(i-4)*.05,.72+(i-4)*.05));if(kk<=0||k<F[i]-1e-6)continue;
+    const mx=mix(cx,P[i][0],.5)+(V()?-80:60),my=mix(cy,P[i][1],.5)-60;
+    curve(cx,cy,mx,my,P[i][0],P[i][1],kk,INK,2.5,.4);
+  }
+  // Fi 罗盘：指针定向，指向路径前方
+  const[ex,ey]=P.at(-1),ang=Math.atan2(ey-cy,ex-cx);
+  fi(cx,cy,18,1);
+  const pa=span(p,0,.1);ln(cx,cy,cx+Math.cos(ang)*46*pa,cy+Math.sin(ang)*46*pa,INK,5,pa);
+  if(p>.85)glow(cx,cy,220,span(p,.85,.95)*.8);
+};
+
+// ---- 11 边界与收尾 ----
+DRAW.end=(g,t)=>{
+  const p=g.p,[cx,cy]=ringC(),P=pathPts(),F=pathFr(P),gone=span(p,.6,.85);
+  // 缓慢拉远
+  const z=1-.12*ease(p),oy=H*.45;
+  c.save();c.translate(W/2,oy);c.scale(z,z);c.translate(-W/2,-oy);
+  ground(.25*(1-gone));stake(.5*(1-gone));wall(.4*(1-gone));
+  poly(P,F,1,MOSS,6,.85);
+  P.forEach(([x,y])=>dot(x,y,12,MOSS));
+  // 路径末端最后一个节点轻微亮起
+  const[ex,ey]=P.at(-1),la=span(p,.85,.93);
+  if(la>0){mossGlow(ex,ey,110,la);dot(ex,ey,14,MOSS)}
+  fi(cx,cy,18);
+  c.restore();
+  // 「INFP」四个字母：出现，再逐个淡去（重音 p≈.3）
+  const L='INFP';
+  for(let i=0;i<4;i++){
+    const a=out(span(p,.02+i*.03,.1+i*.03))*(1-span(p,.2+i*.04,.3+i*.04));
+    if(a<=0)continue;
+    const x=V()?W*(.29+i*.14):W*(.38+i*.08),y=V()?H*.145:H*.16;
+    txt(L[i],x,y,V()?120:96,INK,a*.85,true);
+  }
+  // 淡出到纸白
+  const fo=span(p,.95,1);
+  if(fo>0){c.globalAlpha=fo;c.fillStyle='#EEEBE4';c.fillRect(0,0,W,H);c.globalAlpha=1}
+};
+
+// @@DRAW
+
+// ---- 启动 ----
+boot();
+</script>
+</body>
+</html>

@@ -3,3 +3,9 @@ node_modules/
 dist/
 projects/*/output/*
 !projects/*/output/.gitkeep
+
+# 音频在确认授权前不入库（见 prompt/core/production.md）
+projects/*/assets/*.mp3
+projects/*/assets/*.wav
+projects/*/assets/*.m4a
+projects/*/assets/*.flac

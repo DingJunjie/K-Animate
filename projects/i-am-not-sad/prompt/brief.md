@@ -68,9 +68,10 @@
 
 ## 技术约定
 
-- 遵循 `prompt/core/production.md`，模式方法见 `prompt/modes/song.md`
+- 遵循 `prompt/core/production.md`、`prompt/core/framing.md`；模式方法见 `prompt/modes/song.md`，载体方法见 `prompt/media/web.md`
+- 载体：`web`；画幅：16:9（1920×1080）
 - 单文件 HTML，Canvas 2D 绘制，不使用 Three.js（本片不需要 3D）
-- 1920×1080，支持 `renderAt(t)` / `window.ready` / `?capture&t=`
+- 支持 `renderAt(t)` / `window.ready` / `?capture&t=`
 - 支持载入本地音频文件同步播放
 - 不附带音频文件，不生成视频
 
