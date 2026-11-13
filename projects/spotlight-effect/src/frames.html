@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>聚光灯效应 · 风格帧</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000}
+#cv{position:absolute;left:50%;top:50%;transform-origin:0 0}
+</style>
+</head>
+<body>
+<canvas id="cv" width="1080" height="1920"></canvas>
+<script>
+// ---- 色板（本片独立，不沿用 infp-growth）----
+const BG='#15120F',LIGHT='#FFE6B8',YOU='#FF6F5E',OTHER='#7FD1C7',DIM='#3A332C',TEXT='#F4EDE2';
+const SANS='"PingFang SC","Noto Sans SC","Helvetica Neue",sans-serif';
+const W=1080,H=1920,cv=document.getElementById('cv'),c=cv.getContext('2d');
+const q=new URLSearchParams(location.search),F=+(q.get('f')||1);
+const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
+function rng(s){return()=>{s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function fit(){const k=Math.min(innerWidth/W,innerHeight/H);cv.style.transform=`scale(${k}) translate(-50%,-50%)`}
+// ---- 通用：光、颗粒、人物剪影、字幕 ----
+// 聚光灯：从画面上方 (sx,0) 打下的光锥 + 落点 (x,y) 的柔边光斑
+function spot(x,y,r,col=LIGHT,a=1,sx=x){
+  c.save();c.globalCompositeOperation='lighter';c.globalAlpha=a*.10;
+  const cg=c.createLinearGradient(0,0,0,y);cg.addColorStop(0,col);cg.addColorStop(1,col+'00');c.fillStyle=cg;
+  c.beginPath();c.moveTo(sx-r*.12,0);c.lineTo(sx+r*.12,0);c.lineTo(x+r,y);c.lineTo(x-r,y);c.closePath();c.fill();
+  c.globalAlpha=a;const g=c.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0,col+'cc');g.addColorStop(.45,col+'40');g.addColorStop(1,col+'00');
+  c.fillStyle=g;c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fill();c.restore();
+}
+// 颗粒：固定种子，缓存
+let gc=null;
+function grain(a=.07){
+  if(!gc){gc=document.createElement('canvas');gc.width=W;gc.height=H;const g=gc.getContext('2d'),r=rng(3);
+    for(let i=0;i<9000;i++){g.fillStyle=r()<.5?'#fff':'#000';g.globalAlpha=r()*.5;g.fillRect(r()*W,r()*H,1.5,1.5)}}
+  c.globalAlpha=a;c.drawImage(gc,0,0);c.globalAlpha=1;
+}
+// 人物剪影：s 尺寸；face -1 朝左 / 0 正面 / 1 朝右；o.lit 受光程度；o.col 轮廓光颜色；o.self 手指按在自己脸上
+function person(x,y,s,face=0,o={}){
+  const hr=s*.32,lit=o.lit||0,col=o.col||LIGHT;
+  c.fillStyle=o.fill||DIM;
+  c.beginPath();c.ellipse(x,y+s*.55,s*.5,s*.42,0,Math.PI,0);c.lineTo(x+s*.5,y+s);c.lineTo(x-s*.5,y+s);c.closePath();c.fill();
+  c.beginPath();c.arc(x,y,hr,0,Math.PI*2);c.fill();
+  if(lit>0){c.save();c.globalAlpha=lit;c.strokeStyle=col;c.lineWidth=Math.max(2,s*.04);
+    const a0=face===0?-Math.PI*.85:face>0?-Math.PI*.5:-Math.PI*1.1;
+    c.beginPath();c.arc(x,y,hr,a0,a0+Math.PI*.6);c.stroke();c.restore()}
+  if(o.self){c.strokeStyle=o.fill||DIM;c.lineWidth=s*.11;c.lineCap='round';
+    c.beginPath();c.moveTo(x+s*.38,y+s*.75);c.quadraticCurveTo(x+s*.45,y+s*.2,x+hr*.6,y+hr*.2);c.stroke();c.lineCap='butt'}
+}
+// 字幕：基线 76%（字幕区 66%–79%）
+function sub(rows,fs=54){
+  c.font='600 '+fs+'px '+SANS;c.textAlign='center';c.textBaseline='alphabetic';c.fillStyle=TEXT;
+  rows.forEach((s,i)=>c.fillText(s,W/2,H*.76-(rows.length-1-i)*fs*1.5));
+}
+const FRAMES={};
+// ---- f1 · 镜子前：暖、近；剪坏的刘海是唯一的强调色 ----
+// 刘海保留心电图感（用户确认）：停留短、有引导感；正片中随前奏重击脉动
+function f1(){
+  const mx=170,my=300,mw=740,mh=900,hx=W/2,hy=my+mh*.5,hr=210;
+  spot(W/2,my+mh*.35,560,LIGHT,.9,W/2);
+  c.save();c.beginPath();c.roundRect(mx,my,mw,mh,60);c.clip();
+  const g=c.createLinearGradient(0,my,0,my+mh);g.addColorStop(0,'#2E261F');g.addColorStop(1,'#17130F');
+  c.fillStyle=g;c.fillRect(mx,my,mw,mh);
+  // 倒影：肩、头
+  c.fillStyle='#352D25';c.beginPath();c.ellipse(hx,hy+hr*2.1,hr*1.9,hr*1.2,0,0,Math.PI*2);c.fill();
+  c.fillStyle='#4A3F35';c.beginPath();c.arc(hx,hy,hr,0,Math.PI*2);c.fill();
+  // 头发 + 参差的刘海
+  const r=rng(7),pts=[],n=11,y0=hy-hr*.28;
+  for(let i=0;i<=n;i++){const x=hx+hr*.88-i*hr*1.76/n,big=i===4||i===5;pts.push([x,y0+(i%2?(big?95:20+r()*35):-r()*18)])}
+  c.fillStyle='#0E0B09';c.beginPath();c.moveTo(hx-hr-16,hy);c.arc(hx,hy,hr+16,Math.PI,0);
+  c.lineTo(pts[0][0],pts[0][1]);pts.forEach(p=>c.lineTo(p[0],p[1]));c.closePath();c.fill();
+  c.strokeStyle=YOU;c.lineWidth=4;c.lineJoin='round';c.shadowColor=YOU;c.shadowBlur=22;
+  c.beginPath();pts.forEach((p,i)=>i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1]));c.stroke();c.shadowBlur=0;
+  // 头顶受光
+  c.strokeStyle=LIGHT;c.globalAlpha=.5;c.lineWidth=3;c.beginPath();c.arc(hx,hy,hr+16,-Math.PI*.8,-Math.PI*.2);c.stroke();
+  // 镜面斜向高光
+  c.globalAlpha=.03;c.fillStyle='#fff';c.beginPath();
+  c.moveTo(mx+mw*.62,my);c.lineTo(mx+mw*.78,my);c.lineTo(mx+mw*.3,my+mh);c.lineTo(mx+mw*.14,my+mh);c.closePath();c.fill();
+  c.globalAlpha=1;c.restore();
+  c.strokeStyle='#5A4E42';c.lineWidth=6;c.beginPath();c.roundRect(mx,my,mw,mh,60);c.stroke();
+  grain(.08);
+  c.font='500 28px '+SANS;c.fillStyle=TEXT;c.globalAlpha=.5;c.textAlign='left';c.textBaseline='top';
+  c.fillText('07:42 · 出门前',W*.08,H*.13);c.globalAlpha=1;
+  sub(['完了。'],72);
+}
+FRAMES[1]=f1;
+// ---- f2 · 教室聚光灯（第一遍 drop）：全场暗，只有你在光里；全班回头 ----
+function f2(){
+  const yx=W/2,yy=H*.53,ys=150,r=rng(11);
+  // 全班：4 排，越远越小越暗；头都转向你，离你越近受光越亮
+  [[340,58,7],[470,70,6],[620,86,6],[790,104,5]].forEach(([y,s,n],ri)=>{
+    c.fillStyle='#211B16';c.fillRect(W*.06,y+s*.95,W*.88,s*.12);
+    for(let i=0;i<n;i++){
+      const x=W*.1+W*.8*(i+.5)/n+(r()-.5)*24;
+      if(ri>=2&&Math.abs(x-yx)<190)continue;
+      person(x,y,s,Math.sign(yx-x),{lit:.2+ri*.18});
+    }
+  });
+  // 门框与门外的光
+  c.fillStyle='#2A231C';c.fillRect(yx-150,760,300,470);
+  spot(yx,yy+ys*.4,440,LIGHT,1,yx);
+  c.strokeStyle='#5A4E42';c.lineWidth=5;c.strokeRect(yx-150,760,300,470);
+  // 你：受光最亮，头上是 f1 的心电图红线
+  person(yx,yy,ys,0,{lit:1,fill:'#4A3F35'});
+  const hr=ys*.32;c.strokeStyle=YOU;c.lineWidth=3;c.lineJoin='round';c.shadowColor=YOU;c.shadowBlur=16;
+  c.beginPath();for(let i=0;i<=8;i++){const x=yx-hr*.8+i*hr*1.6/8,y=yy-hr*.3+(i%2?(i===4?26:10):-6);i?c.lineTo(x,y):c.moveTo(x,y)}c.stroke();c.shadowBlur=0;
+  // 前排的一句话（埋点②）
+  const bx=90,by=660;
+  c.fillStyle='#2E261F';c.beginPath();c.roundRect(bx,by,360,76,38);c.fill();
+  c.beginPath();c.moveTo(bx+70,by+76);c.lineTo(bx+100,by+76);c.lineTo(bx+78,by+104);c.closePath();c.fill();
+  c.font='600 32px '+SANS;c.fillStyle=TEXT;c.textAlign='center';c.textBaseline='middle';c.fillText('你刘海怎么了？',bx+180,by+38);
+  grain(.08);
+  c.font='500 28px '+SANS;c.fillStyle=TEXT;c.globalAlpha=.5;c.textAlign='left';c.textBaseline='top';
+  c.fillText('08:15 · 推开教室门',W*.08,H*.13);c.globalAlpha=1;
+}
+FRAMES[2]=f2;
+// ---- f3 · 抽象段：100 个光点，23 个朝向你（暖），77 个照着自己（冷）；数量为示意 ----
+function f3(){
+  const cx=W/2,cy=H*.395,r=rng(23),pts=[];
+  [[170,14],[260,22],[350,30],[440,34]].forEach(([rad,n])=>{const off=r()*Math.PI*2;
+    for(let i=0;i<n;i++){const a=off+i/n*Math.PI*2+(r()-.5)*.12,d=rad+(r()-.5)*30;pts.push([cx+Math.cos(a)*d,cy+Math.sin(a)*d])}});
+  // 固定种子洗牌，取 23 个「注意到了」
+  const idx=pts.map((_,i)=>i);for(let i=idx.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[idx[i],idx[j]]=[idx[j],idx[i]]}
+  const seen=new Set(idx.slice(0,23));
+  spot(cx,cy,260,LIGHT,.3,cx);
+  c.save();c.globalCompositeOperation='lighter';
+  pts.forEach(([x,y],i)=>{
+    if(seen.has(i)){const d=Math.hypot(x-cx,y-cy),k=1-40/d;
+      // 只留朝向「你」的短线，避免 23 条长线把比例放大
+      const sl=Math.min(d*.35,90)/d;
+      c.globalAlpha=.4;c.strokeStyle=LIGHT;c.lineWidth=1.5;c.beginPath();c.moveTo(x,y);c.lineTo(x+(cx-x)*sl,y+(cy-y)*sl);c.stroke();
+      const hg=c.createRadialGradient(x,y,0,x,y,22);hg.addColorStop(0,LIGHT+'99');hg.addColorStop(1,LIGHT+'00');
+      c.globalAlpha=1;c.fillStyle=hg;c.beginPath();c.arc(x,y,22,0,Math.PI*2);c.fill();
+      c.fillStyle='#FFF6E6';c.shadowColor=LIGHT;c.shadowBlur=14;c.beginPath();c.arc(x,y,7,0,Math.PI*2);c.fill();c.shadowBlur=0}
+    else{const g=c.createRadialGradient(x,y,0,x,y,18);g.addColorStop(0,OTHER+'40');g.addColorStop(1,OTHER+'00');
+      c.globalAlpha=1;c.fillStyle=g;c.beginPath();c.arc(x,y,18,0,Math.PI*2);c.fill();
+      c.globalAlpha=.75;c.fillStyle=OTHER;c.beginPath();c.arc(x,y,4,0,Math.PI*2);c.fill();c.globalAlpha=1}
+  });
+  c.restore();
+  // 你
+  c.fillStyle=YOU;c.shadowColor=YOU;c.shadowBlur=30;c.beginPath();c.arc(cx,cy,12,0,Math.PI*2);c.fill();c.shadowBlur=0;
+  c.font='600 28px '+SANS;c.fillStyle=TEXT;c.globalAlpha=.75;c.textAlign='center';c.textBaseline='top';c.fillText('你',cx,cy+26);c.globalAlpha=1;
+  grain(.08);
+  c.font='500 24px '+SANS;c.fillStyle=TEXT;c.globalAlpha=.5;c.textAlign='left';c.textBaseline='top';
+  c.fillText('示意 · Gilovich, Medvec & Savitsky (2000)',W*.08,H*.13);c.globalAlpha=1;
+  sub(['大约四分之一的人，','注意到了。']);
+}
+FRAMES[3]=f3;
+// ---- f4 · 真实教室：与 f2 同构图；普通吊灯、去饱和、各做各的；只有 3 道目光且很快淡掉 ----
+function f4(){
+  const yx=W/2,yy=H*.53,ys=150,r=rng(11),r2=rng(5),looks=[];
+  c.fillStyle='#24221F';c.fillRect(0,0,W,H);
+  // 普通教室灯：三盏吊灯，均匀柔光
+  for(let i=0;i<3;i++){const x=W*(.22+i*.28);
+    const g=c.createRadialGradient(x,160,0,x,160,420);g.addColorStop(0,'rgba(220,216,208,.10)');g.addColorStop(1,'rgba(220,216,208,0)');
+    c.fillStyle=g;c.fillRect(x-420,160,840,840);c.fillStyle='#D9D6CF';c.globalAlpha=.55;c.fillRect(x-80,150,160,10);c.globalAlpha=1}
+  // 全班：位置与 f2 相同（同一种子），大多不看你
+  [[340,58,7],[470,70,6],[620,86,6],[790,104,5]].forEach(([y,s,n],ri)=>{
+    c.fillStyle='#302C28';c.fillRect(W*.06,y+s*.95,W*.88,s*.12);
+    for(let i=0;i<n;i++){
+      const x=W*.1+W*.8*(i+.5)/n+(r()-.5)*24,k=r2();
+      if(ri>=2&&Math.abs(x-yx)<190)continue;
+      const look=(ri===1&&i===2)||(ri===2&&i===1)||(ri===3&&i===n-1);
+      person(x,y,s,look?Math.sign(yx-x):(k<.5?0:k<.75?-1:1),{fill:'#3E3A36',lit:look?.35:0,col:TEXT});
+      if(!look&&k<.35){c.fillStyle=OTHER;c.globalAlpha=.5;c.fillRect(x-s*.12,y+s*.55,s*.24,s*.14);c.globalAlpha=1}
+      if(look)looks.push([x,y]);
+    }
+  });
+  // 门框：没有聚光
+  c.fillStyle='#34302B';c.fillRect(yx-150,760,300,470);c.strokeStyle='#55504A';c.lineWidth=5;c.strokeRect(yx-150,760,300,470);
+  person(yx,yy,ys,0,{fill:'#4A4642'});
+  // 刘海红线：变细、变淡、不发光
+  const hr=ys*.32;c.strokeStyle=YOU;c.globalAlpha=.45;c.lineWidth=2;c.lineJoin='round';
+  c.beginPath();for(let i=0;i<=8;i++){const x=yx-hr*.8+i*hr*1.6/8,y=yy-hr*.3+(i%2?(i===4?26:10):-6);i?c.lineTo(x,y):c.moveTo(x,y)}c.stroke();c.globalAlpha=1;
+  // 只有 3 道目光，一道比一道淡；第一道标 1s
+  c.setLineDash([6,8]);c.strokeStyle=TEXT;c.lineWidth=1.5;
+  looks.forEach(([x,y],i)=>{const a=[.55,.3,.12][i]||.12,tx=mix0(x,yx,.7),ty=mix0(y,yy-ys*.2,.7);
+    c.globalAlpha=a;c.beginPath();c.moveTo(x,y);c.lineTo(tx,ty);c.stroke();
+    if(i===0){c.setLineDash([]);c.font='500 26px '+SANS;c.fillStyle=TEXT;c.textAlign='center';c.textBaseline='bottom';c.fillText('1s',(x+tx)/2,(y+ty)/2-10);c.setLineDash([6,8])}});
+  c.setLineDash([]);c.globalAlpha=1;
+  grain(.06);
+  c.font='500 28px '+SANS;c.fillStyle=TEXT;c.globalAlpha=.5;c.textAlign='left';c.textBaseline='top';
+  c.fillText('08:15 · 实际上',W*.08,H*.13);c.globalAlpha=1;
+}
+const mix0=(a,b,k)=>a+(b-a)*k;
+FRAMES[4]=f4;
+// ---- f5 · 机制：你的一整束光照自己 vs 同桌的光被拆散，只有一根细线落到你身上 ----
+// 光束：从 (sx,sy) 宽 w0 到 (tx,ty) 宽 w1 的楔形，沿方向渐变
+function beam(sx,sy,tx,ty,w0,w1,col,a){
+  const d=Math.hypot(tx-sx,ty-sy),nx=-(ty-sy)/d,ny=(tx-sx)/d;
+  const g=c.createLinearGradient(sx,sy,tx,ty);g.addColorStop(0,col+'ee');g.addColorStop(1,col+'33');
+  c.save();c.globalCompositeOperation='lighter';c.globalAlpha=a;c.fillStyle=g;c.beginPath();
+  c.moveTo(sx+nx*w0/2,sy+ny*w0/2);c.lineTo(tx+nx*w1/2,ty+ny*w1/2);c.lineTo(tx-nx*w1/2,ty-ny*w1/2);c.lineTo(sx-nx*w0/2,sy-ny*w0/2);
+  c.closePath();c.fill();c.restore();
+}
+function lamp(x,y,col){c.fillStyle=col;c.shadowColor=col;c.shadowBlur=24;c.beginPath();c.arc(x,y,10,0,Math.PI*2);c.fill();c.shadowBlur=0}
+function label(s,x,y,col,a=.85,fs=28){c.font='600 '+fs+'px '+SANS;c.fillStyle=col;c.globalAlpha=a;c.textAlign='center';c.textBaseline='middle';c.fillText(s,x,y);c.globalAlpha=1}
+function f5(){
+  const ux=290,vx=790,py=1000,ps=150,ly=330;
+  // 你：一整束暖光照自己
+  beam(ux,ly,ux,py+40,24,360,LIGHT,.5);lamp(ux,ly,LIGHT);
+  ['刘海','答错','朋友圈'].forEach((s,i)=>label(s,ux+(i-1)*40,560+i*110,LIGHT,.9,32));
+  person(ux,py,ps,0,{lit:1,fill:'#4A3F35'});
+  const hr=ps*.32;c.strokeStyle=YOU;c.lineWidth=3;c.lineJoin='round';c.shadowColor=YOU;c.shadowBlur=14;
+  c.beginPath();for(let i=0;i<=8;i++){const x=ux-hr*.8+i*hr*1.6/8,y=py-hr*.3+(i%2?(i===4?26:10):-6);i?c.lineTo(x,y):c.moveTo(x,y)}c.stroke();c.shadowBlur=0;
+  // 同桌：光被拆成 7 束细冷光
+  lamp(vx,ly,OTHER);
+  [['老师',880,170],['窗外',1010,330],['手机',990,560],['考试',960,780],['作业',650,560],['午饭',620,400],['他的刘海',vx,py-70]].forEach(([s,tx,ty])=>{
+    beam(vx,ly,tx,ty,6,44,OTHER,.45);label(s,tx,ty+(ty<ly?-30:ty>py-100?-40:34),OTHER,.8,26)});
+  person(vx,py,ps,-1,{lit:.5,col:OTHER});
+  // 落到你身上的，只有一根细线
+  beam(vx,ly,ux+70,py-60,2,4,LIGHT,.9);label('你',(vx+ux+70)/2+18,(ly+py-60)/2-6,LIGHT,.9,24);
+  grain(.08);
+  c.font='500 28px '+SANS;c.fillStyle=TEXT;c.globalAlpha=.5;c.textAlign='left';c.textBaseline='top';
+  c.fillText('你的灯 / 他的灯',W*.08,H*.13);c.globalAlpha=1;
+}
+FRAMES[5]=f5;
+function render(){c.setTransform(1,0,0,1,0,0);c.fillStyle=BG;c.fillRect(0,0,W,H);(FRAMES[F]||(()=>{}))()}
+addEventListener('resize',fit);
+// window.ready：字体就绪、首帧画完后兑现的 Promise
+window.ready=(document.fonts?document.fonts.ready:Promise.resolve()).then(()=>{fit();render()});
+</script>
+</body>
+</html>

@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>INFP 成长指南 · v2</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#05080e}
+#stage{position:absolute;left:50%;top:50%;transform-origin:0 0}
+#cv{display:block}
+#ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;align-items:center;padding:8px 12px;background:#0e1624e6;color:#ddd;font:12px Menlo,monospace;z-index:9}
+#ui button,#ui label{background:#1c2a40;color:#ddd;border:1px solid #ffffff33;border-radius:4px;padding:5px 9px;cursor:pointer;white-space:nowrap}
+#ui input[type=range]{flex:1;min-width:40px}
+#ui input[type=file]{display:none}
+#cal{position:fixed;right:12px;bottom:52px;max-width:360px;max-height:50vh;overflow:auto;background:#fff;color:#0E1624;font:12px/1.5 Menlo,monospace;padding:10px;border-radius:6px;white-space:pre;display:none;z-index:9}
+.capture #ui,.capture #cal{display:none!important}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="ui">
+  <button id="play">播放</button>
+  <input id="seek" type="range" min="0" max="172" step="0.01" value="0" aria-label="时间轴">
+  <span id="time">00:00</span>
+  <button id="ratio">9:16</button>
+  <label>载入音频<input id="audioFile" type="file" accept="audio/*"></label>
+  <button id="calBtn">校准</button>
+  <button id="expBtn">导出锚点</button>
+  <span id="state">无音轨</span>
+</div>
+<pre id="cal"></pre>
+<audio id="audio"></audio>
+<script>
+// ---- 色板 ----
+const BG='#0E1624',INK='#9FB1C9',BRASS='#C9A45C',RED='#C8553D',PAPER='#E8E2D4';
+const SERIF='"Noto Serif SC","Songti SC","STSong",serif',MONO='"IBM Plex Mono",Menlo,monospace';
+
+// ---- 锚点（默认值，±2s，待校准）：见 storyboard-v2.md ----
+const SEG=[['hook',0],['memo',12],['standard',24],['gap',38],['shadow',50],['compass',62],['hero',75],['tertiary',92],['shadowLit',109],['tack',128],['end',146]];
+const NAMES=['钩子','备忘录','标准从哪来','落差','压力下的阴影','尺子→罗盘','主导与辅助','第三与劣势','阴影的另一面','反复','结尾'];
+const FADE=[160,172];let anchors=SEG.map(s=>s[1]),D=172;
+
+// ---- 参数：?ratio=9x16|16x9  ?capture  ?t=  ?anchors= ----
+const q=new URLSearchParams(location.search);
+if(q.has('capture'))document.body.classList.add('capture');
+let RATIO=q.get('ratio')==='16x9'?'16x9':'9x16';
+const cv=document.getElementById('cv');let c=cv.getContext('2d');
+let W=1080,H=1920;const V=()=>RATIO==='9x16';
+
+// ---- 工具 ----
+const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
+const ease=x=>{x=clamp(x);return x*x*(3-2*x)};
+const span=(t,a,b)=>clamp((t-a)/(b-a));
+const mix=(a,b,p)=>a+(b-a)*p;
+function rng(s){return()=>{s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function line(x1,y1,x2,y2){c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke()}
+function circle(x,y,r){c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.stroke()}
+function dot(x,y,r){c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fill()}
+function glow(col,b){c.shadowColor=col;c.shadowBlur=b}
+function noGlow(){c.shadowBlur=0}
+// 当前段：i、id、起止 s/e、段内秒数 lt、进度 p
+// 段内时间 lt = p × 默认时长：校准改锚点后，动画按比例整体伸缩（web.md 约定）
+const NOM=SEG.map((s,i)=>(i+1<SEG.length?SEG[i+1][1]:172)-s[1]);
+function seg(t){let i=anchors.length-1;while(i>0&&t<anchors[i])i--;const s=anchors[i],e=i+1<anchors.length?anchors[i+1]:D,p=clamp((t-s)/(e-s));return{i,id:SEG[i][0],s,e,p,lt:p*NOM[i]}}
+
+// ---- 背景：墨蓝底 + 暗角 + 颗粒，缓存到离屏画布 ----
+let bgc=null;
+function bg(){
+  if(!bgc||bgc.width!==W||bgc.height!==H){
+    bgc=document.createElement('canvas');bgc.width=W;bgc.height=H;const b=bgc.getContext('2d');
+    b.fillStyle=BG;b.fillRect(0,0,W,H);
+    const g=b.createRadialGradient(W/2,H*.4,0,W/2,H*.4,Math.max(W,H)*.75);
+    g.addColorStop(0,'#16223500');g.addColorStop(1,'#03060bcc');b.fillStyle=g;b.fillRect(0,0,W,H);
+    const r=rng(6);b.fillStyle='#ffffff';
+    for(let i=0;i<2600;i++){b.globalAlpha=r()*.05;b.fillRect(r()*W,r()*H,1.2,1.2)}
+  }
+  c.drawImage(bgc,0,0);
+}
+// ---- 字幕：9:16 基线 H*.76+50；超宽自动缩小字号 ----
+function sub(rows,a,dy=0){
+  if(a<=0)return;
+  let fs=V()?50:40;const maxW=W*.86;
+  c.font='600 '+fs+'px '+SERIF;const w=Math.max(...rows.map(s=>c.measureText(s).width));
+  if(w>maxW){fs=Math.floor(fs*maxW/w);c.font='600 '+fs+'px '+SERIF}
+  const lh=fs*1.55,bottom=V()?H*.76+50:H*.9;
+  c.textAlign='center';c.textBaseline='alphabetic';c.fillStyle=PAPER;c.globalAlpha=a;
+  rows.forEach((s,i)=>c.fillText(s,W/2,bottom-(rows.length-1-i)*lh+dy));c.globalAlpha=1;
+}
+// 段内字幕：[t0,t1] 秒，淡入上浮、淡出
+function cue(lt,t0,t1,rows){const a=Math.min(span(lt,t0,t0+.45),span(lt,t1,t1-.35));sub(rows,a,(1-ease(span(lt,t0,t0+.45)))*12)}
+function note(s,a=1){
+  if(a<=0)return;c.font='500 22px '+MONO;c.textAlign='left';c.textBaseline='top';
+  c.fillStyle=INK;c.globalAlpha=.6*a;c.fillText(s,V()?W*.08:W*.05,V()?H*.13:H*.07);c.globalAlpha=1;
+}
+const DRAW={}; // 段 id -> (g) => void，g.lt 为段内秒数
+// ---- 段 6 · 尺子→罗盘（移植自 anim-v2-s6.html；刻度段慢 2 倍，罗盘原速）----
+const S6={SLOW:2.4,TS:2};
+const s6t=t=>t<S6.SLOW*S6.TS?t/S6.TS:t-S6.SLOW*(S6.TS-1);
+const s6L=()=>({cx:W/2,cy:V()?H*.43:H*.45,R:V()?300:260,ly:V()?H*.22:H*.16,dec:-11*Math.PI/180});
+// 尺子在量「那句话」：Ne 分叉出多个版本，最好的够到标准线；说出口的停在下面，红笔标出落差
+function s6Ruler(t){
+  const {ly}=s6L(),ox=W/2,oy=V()?H*.5:H*.6,fo=1-span(t,2.4,3.4);
+  if(fo<=0)return;
+  const bp=ease(span(t,.2,1.3));
+  [[-.3,.55],[-.16,.8],[.08,1],[.22,.7],[.34,.5]].forEach(([dx,h])=>{
+    const best=h===1,tx=ox+dx*W,ty=mix(oy,ly,h),ex=mix(ox,tx,bp*fo),ey=mix(oy,ty,bp*fo);
+    c.strokeStyle=best?BRASS:INK;c.fillStyle=c.strokeStyle;c.lineWidth=best?2:1.2;c.globalAlpha=(best?.9:.45)*fo;
+    if(best)glow(BRASS,10);
+    c.beginPath();c.moveTo(ox,oy);c.quadraticCurveTo(mix(ox,ex,.2),mix(oy,ey,.6),ex,ey);c.stroke();noGlow();
+    dot(ex,ey,best?5:3);
+    if(best&&bp>.95){c.font='500 20px '+MONO;c.textAlign='left';c.textBaseline='middle';c.fillText('想到的',ex+14,ey+24)}
+  });
+  const ap=ease(span(t,1,1.6)),ay=mix(oy,mix(oy,ly,.66),ap);
+  c.globalAlpha=fo;c.strokeStyle=PAPER;c.lineWidth=4;line(ox,oy,ox,ay);
+  c.fillStyle=INK;dot(ox,oy,6);
+  c.font='500 20px '+MONO;c.textAlign='center';c.textBaseline='top';c.fillText('那句话',ox,oy+18);
+  if(ap>.95){c.fillStyle=PAPER;c.textAlign='left';c.textBaseline='middle';c.fillText('说出口的',ox+18,ay)}
+  const ra=ease(span(t,1.6,2))*fo;
+  if(ra>0){const bx=ox-56;c.strokeStyle=RED;c.lineWidth=3;c.globalAlpha=ra;
+    line(bx,ay,bx,ly+6);line(bx,ay,bx+16,ay);line(bx,ly+6,bx+16,ly+6);
+    c.font='600 26px '+SERIF;c.fillStyle=RED;c.textAlign='right';c.textBaseline='middle';c.fillText('差一截',bx-14,(ay+ly)/2)}
+  c.globalAlpha=1;
+}
+// 罗盘：网格、外圈、指针（标准线旋转收拢而来）
+function s6Compass(t){
+  const {cx,cy,R,ly,dec}=s6L(),st=W/12,p=ease(span(t,2.4,5.4)),aT=-Math.PI/2+dec;
+  const ga=span(t,5.4,7);
+  if(ga>0){c.strokeStyle=INK;c.lineWidth=1;c.globalAlpha=.12*ga;
+    for(let x=st/2;x<W;x+=st)line(x,0,x,H);for(let y=st/2;y<H;y+=st)line(0,y,W,y);c.globalAlpha=1}
+  const rp=ease(span(t,3.6,5.8));
+  if(rp>0){c.strokeStyle=INK;c.lineWidth=1.5;const a0=-Math.PI/2,a1=a0+Math.PI*2*rp;
+    c.beginPath();c.arc(cx,cy,R,a0,a1);c.stroke();c.beginPath();c.arc(cx,cy,R*.82,a0,a1);c.stroke();
+    c.lineWidth=1;for(let i=0;i<72*rp;i++){const a=a0+i/72*Math.PI*2,r2=i%18===0?R*.84:i%2===0?R*.9:R*.94;line(cx+Math.cos(a)*R,cy+Math.sin(a)*R,cx+Math.cos(a)*r2,cy+Math.sin(a)*r2)}
+    c.font='500 26px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='middle';c.globalAlpha=span(t,5.2,5.8);
+    [['N',-90],['E',0],['S',90],['W',180]].forEach(([s,d])=>{const a=d*Math.PI/180;c.fillText(s,cx+Math.cos(a)*R*1.13,cy+Math.sin(a)*R*1.13)});c.globalAlpha=1}
+  const sw=t>5.4?.25*Math.exp(-3*(t-5.4))*Math.sin(9*(t-5.4)):0;
+  const ang=mix(0,aT,p)+sw,ux=Math.cos(ang),uy=Math.sin(ang),nx=-uy,ny=ux;
+  const px=mix(W/2,cx,p),py=mix(ly,cy,p),L1=mix(W*.4,R*.6,p),L2=mix(W*.4,R*.78,p);
+  c.strokeStyle=BRASS;c.lineWidth=mix(2,3,p);glow(BRASS,18);line(px-ux*L1,py-uy*L1,px+ux*L2,py+uy*L2);noGlow();
+  c.lineWidth=1.5;
+  for(let i=0;i<=40;i++){const k=i/40,d=-L1+(L1+L2)*k,h=i%10===0?24:i%5===0?14:8;
+    c.globalAlpha=(1-p)*.9+p*(i%4===0?.8*(1-k):0);if(c.globalAlpha<.01)continue;
+    const x=px+ux*d,y=py+uy*d,hh=h*(1-p*.5);line(x,y,x+nx*hh,y+ny*hh)}
+  c.globalAlpha=1;return p;
+}
+// 收尾元素：Fi 光点、正北虚线、δ 弧、航线
+function s6Finish(t,p){
+  const {cx,cy,R,dec}=s6L(),aT=-Math.PI/2+dec;
+  if(p>0){c.fillStyle=BRASS;c.globalAlpha=p;glow(BRASS,24);dot(cx,cy,7);noGlow();c.globalAlpha=1}
+  const fa=ease(span(t,7,7.8));
+  if(fa>0){c.globalAlpha=fa;c.strokeStyle=INK;c.lineWidth=1.5;c.setLineDash([6,8]);line(cx,cy,cx,cy-R*1.02);c.setLineDash([]);
+    c.strokeStyle=BRASS;c.lineWidth=1;c.beginPath();c.arc(cx,cy,R*.45,aT,-Math.PI/2);c.stroke();
+    const la=-Math.PI/2+dec/2;c.font='italic 28px '+SERIF;c.fillStyle=BRASS;c.textAlign='center';c.textBaseline='middle';
+    c.fillText('δ',cx+Math.cos(la)*R*.55,cy+Math.sin(la)*R*.55);c.globalAlpha=1}
+  const ca=ease(span(t,7.6,8.4));
+  if(V()&&ca>0){const y=H*.64,x0=W*.12,x1=mix(x0,W*.88,ca);c.strokeStyle=BRASS;c.lineWidth=1.5;c.globalAlpha=.7;
+    c.setLineDash([10,8]);line(x0,y,x1,y);c.setLineDash([]);line(x1-14,y-8,x1,y);line(x1-14,y+8,x1,y);
+    c.font='500 20px '+MONO;c.fillStyle=BRASS;c.textAlign='left';c.textBaseline='bottom';c.fillText('COURSE 349°',x0,y-12);c.globalAlpha=1}
+  note('磁偏角 δ · 各地不同、逐年变化（待核实）',span(t,7.4,8));
+}
+DRAW.compass=g=>{
+  const t=s6t(g.lt),p=s6Compass(t);s6Ruler(t);s6Finish(t,p);
+  cue(t,1.6,3.2,['这样，够好了吗？']);
+  cue(t,5.6,7.2,['这是，我在意的吗？']);
+  cue(t,7.4,10.6,['罗盘从来不指正北。','指方向，不需要准。']);
+};
+// ---- 聊天框（段 1、11 共用）：[是否是你, 文字, 时间] ----
+const CHAT=[[0,'到家了吗','20:31'],[1,'刚到，今天好累','20:40'],[0,'今天那家店人好多','20:58'],[1,'哈哈 排了多久','21:03'],[0,'四十分钟，不过值得','21:05'],[1,'下次带我','21:20'],[1,'其实我一直想说，跟你聊天很开心','21:47']];
+function phone(){const pw=V()?W*.72:W*.32,ph=V()?H*.46:H*.76;return{x:(W-pw)/2,y:V()?H*.16:H*.1,pw,ph}}
+// o.scroll 向下滚动像素（看更早的消息）；o.hi 最后一条发光；o.sweep 重读下划线进度；o.a 透明度
+function drawChat(o){
+  const {x,y,pw,ph}=phone(),by=y+ph-110;
+  c.globalAlpha=o.a??1;c.strokeStyle=INK;c.lineWidth=1.5;
+  c.beginPath();c.roundRect(x,y,pw,ph,36);c.stroke();
+  c.font='500 22px '+MONO;c.fillStyle=INK;c.textBaseline='middle';c.textAlign='left';c.fillText('23:52',x+32,y+36);
+  c.font='600 26px '+SERIF;c.fillStyle=PAPER;c.textAlign='center';c.fillText('Ta',x+pw/2,y+84);
+  line(x,y+120,x+pw,y+120);line(x,by,x+pw,by);
+  c.save();c.beginPath();c.rect(x,y+121,pw,by-y-122);c.clip();
+  let cy=by-40+(o.scroll||0);const M=o.msgs||CHAT;
+  for(let i=M.length-1;i>=0;i--){
+    const [me,s,tm]=M[i],last=i===M.length-1;
+    c.font='400 28px '+SERIF;const w=c.measureText(s).width+44,hh=64,bx=me?x+pw-24-w:x+24;
+    cy-=hh;
+    c.strokeStyle=me?BRASS:INK;c.lineWidth=1.5;if(last&&o.hi)glow(BRASS,22*o.hi);
+    c.beginPath();c.roundRect(bx,cy,w,hh,20);c.stroke();noGlow();
+    c.fillStyle=PAPER;c.textAlign='left';c.fillText(s,bx+22,cy+hh/2);
+    if(last&&o.sweep>0){c.strokeStyle=BRASS;c.lineWidth=2;line(bx+22,cy+hh-12,bx+22+(w-44)*o.sweep,cy+hh-12)}
+    c.font='500 18px '+MONO;c.fillStyle=INK;c.textAlign=me?'right':'left';c.fillText(tm,me?bx+w:bx,cy-14);
+    cy-=48;
+  }
+  c.restore();c.globalAlpha=1;
+  return{x,y,pw,ph,by};
+}
+// ---- 段 1 · 钩子：往上翻，又回到两小时前那句 ----
+DRAW.hook=g=>{
+  const t=g.lt,a=ease(span(t,0,.8));
+  // 往上翻（3–5.5s），停留，再滚回来（6.5–8.5s）
+  const sc=220*(ease(span(t,3,5.5))-ease(span(t,6.5,8.5)));
+  const hi=ease(span(t,.6,1.6))*(.6+.4*Math.sin(t*2.4));
+  const sw=ease(span(t,8.8,10.6));
+  const r=drawChat({a,scroll:sc,hi,sweep:sw});
+  // 输入框：空着
+  c.globalAlpha=a*.5;c.strokeStyle=INK;c.lineWidth=1;
+  c.beginPath();c.roundRect(r.x+24,r.by+28,r.pw-48,56,28);c.stroke();c.globalAlpha=1;
+  cue(t,1,5.4,['两小时前发出的那句话，','你又翻上去，读了一遍。']);
+  cue(t,6,11.4,['撤回，有时限。','重读，没有。']);
+};
+// ---- 段 2 · 备忘录：写满了，第一行空着；分隔线收拢成刻度尺（接段 3）----
+const MEMO=['学吉他','写完那篇小说','早起跑步','整理这几年的照片','学日语','做一个播客','读完那本书','重新开始画画','好好给自己做顿饭'];
+DRAW.memo=g=>{
+  const t=g.lt,{x,y,pw,ph}=phone(),fi=ease(span(t,0,.8)),a=fi*(1-ease(span(t,8.6,10)));
+  const m=ease(span(t,9,11.2)),r0=y+160,rh=(ph-220)/10,ry=V()?H*.5:H*.55;
+  // 手机外框与标题
+  c.globalAlpha=a;c.strokeStyle=INK;c.lineWidth=1.5;c.beginPath();c.roundRect(x,y,pw,ph,36);c.stroke();
+  c.font='600 30px '+SERIF;c.fillStyle=PAPER;c.textAlign='left';c.textBaseline='middle';c.fillText('想做的事',x+40,y+90);
+  c.font='500 20px '+MONO;c.fillStyle=INK;c.textAlign='right';c.fillText('10 项',x+pw-40,y+90);
+  for(let i=0;i<10;i++){
+    const la=i===0?1:ease(span(t,.6+i*.35,1+i*.35)),ty=r0+i*rh+rh/2,sy=mix(r0+(i+1)*rh,ry,m);
+    // 分隔线：不随界面淡出，而是收拢、拉宽成一条横线
+    c.globalAlpha=fi*la*mix(.45,1,m);c.strokeStyle=INK;c.lineWidth=1;
+    line(mix(x+40,W*.12,m),sy,mix(x+pw-40,W*.88,m),sy);
+    c.globalAlpha=a*la;c.font='500 20px '+MONO;c.fillStyle=INK;c.textAlign='left';c.fillText(String(i+1).padStart(2,'0'),x+40,ty);
+    if(i===0){if(Math.floor(t*2)%2===0){c.strokeStyle=BRASS;c.lineWidth=2;line(x+90,ty-18,x+90,ty+18)}}
+    else{c.font='400 28px '+SERIF;c.fillStyle=PAPER;c.fillText(MEMO[i-1],x+90,ty)}
+  }
+  c.globalAlpha=1;
+  // 刻度长出来：成为段 3 开头的刻度尺
+  const tk=ease(span(t,10.2,11.6));
+  if(tk>0){c.strokeStyle=INK;c.lineWidth=1;c.globalAlpha=tk;
+    for(let i=0;i<=60;i++){const xx=W*.12+W*.76*i/60,h=(i%10===0?28:i%5===0?18:10)*tk;line(xx,ry,xx,ry-h)}
+    c.globalAlpha=1}
+  cue(t,1,5.4,['想做的事，写满了一页。','第一行，还空着。']);
+  cue(t,6,10.6,['没做完的事，','好像总在脑子里转。']);
+};
+// ---- 八维星图【系列共享】：自我 4 功能在内圈十字（主导上、辅助右、第三左、劣势下），阴影 4 功能在外圈，各自顺时针偏 45° ----
+const ORDER=['Fi','Ne','Si','Te','Fe','Ni','Se','Ti']; // 【每型独立】INFP 功能顺序
+const SLOT=[-90,0,180,90].map(d=>d*Math.PI/180);
+function mapLayout(){return V()?{x:W*.8,y:H*.165,r:64}:{x:W*.9,y:H*.17,r:64}}
+function starPos(i,L){const a=SLOT[i%4]+(i>=4?Math.PI/4:0),r=L.r*(i>=4?1:.55);return[L.x+Math.cos(a)*r,L.y+Math.sin(a)*r]}
+// o.lit[i] 亮度 0–1；o.col[i] 颜色；o.links [[i,j,透明度],...]；o.labels 是否显示缩写；o.a 整体透明度；o.x/y/r 覆盖位置
+function starMap(o={}){
+  const L={...mapLayout(),...o},A=L.a??1,lit=L.lit||[],col=L.col||[];
+  if(A<=0)return;
+  c.globalAlpha=A*.25;c.strokeStyle=INK;c.lineWidth=1;circle(L.x,L.y,L.r*.55);circle(L.x,L.y,L.r);
+  (L.links||[]).forEach(([i,j,k])=>{const [x1,y1]=starPos(i,L),[x2,y2]=starPos(j,L);c.globalAlpha=A*k;c.strokeStyle=BRASS;c.lineWidth=1.5;line(x1,y1,x2,y2)});
+  for(let i=0;i<8;i++){
+    const [x,y]=starPos(i,L),k=lit[i]||0,cl=col[i]||BRASS;
+    c.globalAlpha=A*(.3+.7*k);c.fillStyle=k>0?cl:INK;if(k>0)glow(cl,18*k);dot(x,y,(i<4?4:3)+3*k);noGlow();
+    if(L.labels!==false){
+      const dx=x-L.x,dy=y-L.y,d=Math.hypot(dx,dy)||1;
+      c.globalAlpha=A*(.35+.65*k);c.font='500 '+(L.fs||16)+'px '+MONO;c.fillStyle=k>0?cl:INK;c.textAlign='center';c.textBaseline='middle';
+      const off=(L.fs||16)*1.25;c.fillText(ORDER[i],x+dx/d*off,y+dy/d*off);
+    }
+  }
+  c.globalAlpha=1;
+}
+// ---- 段 3 · 标准从哪来：刻度尺升成标准线；Fi 光点亮起；推进到千克原器 ----
+const s3L=()=>({cx:W/2,cy:V()?H*.43:H*.42,s:V()?1:.8,ly:V()?H*.22:H*.16,ry0:V()?H*.5:H*.55});
+function s3Rise(t){
+  const {cx,cy,ly,ry0}=s3L(),u=ease(span(t,.4,2.2)),y=mix(ry0,ly,u),x0=mix(W*.12,W*.1,u),x1=mix(W*.88,W*.9,u);
+  // 刻度随上升淡去；线由墨蓝转黄铜
+  c.strokeStyle=INK;c.lineWidth=1;c.globalAlpha=1-u;
+  for(let i=0;i<=60;i++){const x=W*.12+W*.76*i/60,h=i%10===0?28:i%5===0?18:10;line(x,y,x,y-h)}
+  line(x0,y,x1,y);
+  c.globalAlpha=u;c.strokeStyle=BRASS;c.lineWidth=2;glow(BRASS,18*u);line(x0,y,x1,y);noGlow();
+  c.globalAlpha=span(t,2,2.8);c.font='500 20px '+MONO;c.fillStyle=BRASS;c.textAlign='right';c.textBaseline='alphabetic';
+  c.fillText('STANDARD',W*.9,ly-14);
+  // Fi 光点：亮起，虚线连向标准线；原器出现前淡出
+  const fa=ease(span(t,1.2,2.2))*(1-ease(span(t,5,5.8)));
+  if(fa>0){
+    c.globalAlpha=fa;c.fillStyle=BRASS;glow(BRASS,28);dot(cx,cy,8);noGlow();
+    c.font='500 22px '+MONO;c.textAlign='left';c.textBaseline='middle';c.fillText('Fi',cx+22,cy);
+    const k=ease(span(t,2.2,3.4));
+    if(k>0){c.globalAlpha=fa*.6;c.strokeStyle=BRASS;c.lineWidth=1.2;c.setLineDash([5,8]);line(cx,cy-16,cx,mix(cy-16,ly+4,k));c.setLineDash([])}
+  }
+  c.globalAlpha=1;
+}
+// 原器：玻璃罩 5.5–7s，原器 6–7.5s，复制品 7.5–9s，漂移 9–10s，刻度尺 9.5–11s
+function s3Proto(t){
+  const {cx,cy,s}=s3L(),jw=170*s,jh=300*s,by=cy+jh/2,top=cy-jh/2+jw,pw=60*s,ph=90*s;
+  const ja=ease(span(t,5.5,7)),pa=ease(span(t,6,7.5)),ra=ease(span(t,7.5,9)),da=ease(span(t,9,10)),ka=ease(span(t,9.5,11));
+  if(ja<=0)return;
+  c.globalAlpha=ja;c.strokeStyle=INK;c.lineWidth=1.5;
+  c.beginPath();c.moveTo(cx-jw,by);c.lineTo(cx-jw,top);c.arc(cx,top,jw,Math.PI,0);c.lineTo(cx+jw,by);c.stroke();
+  line(cx-jw*1.3,by,cx+jw*1.3,by);
+  c.globalAlpha=pa;c.strokeStyle=BRASS;c.lineWidth=2;glow(BRASS,12);
+  line(cx-pw/2,by,cx-pw/2,by-ph);line(cx+pw/2,by,cx+pw/2,by-ph);
+  c.beginPath();c.ellipse(cx,by-ph,pw/2,pw/7,0,0,Math.PI*2);c.stroke();
+  c.beginPath();c.ellipse(cx,by,pw/2,pw/7,0,0,Math.PI);c.stroke();noGlow();
+  c.strokeStyle=INK;c.lineWidth=1.2;
+  [-1,1].forEach(d=>{
+    const x=cx+d*W*.3,w=pw*.7,h=ph*.7;c.globalAlpha=ra*.75;
+    line(x-w/2,by,x-w/2,by-h);line(x+w/2,by,x+w/2,by-h);line(x-w*.8,by,x+w*.8,by);
+    c.beginPath();c.ellipse(x,by-h,w/2,w/7,0,0,Math.PI*2);c.stroke();
+    c.globalAlpha=da*.75;c.setLineDash([4,7]);line(x-d*w*.7,by-h*.5,mix(x-d*w*.7,cx+d*jw*1.05,da),by-h*.5);c.setLineDash([]);
+    c.font='500 22px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='alphabetic';c.fillText('Δ ≠ 0',x,by+44*s);
+  });
+  const ry=V()?H*.635:by+130*s,x0=W*.12,x1=W*.88;
+  c.globalAlpha=ka*.8;c.strokeStyle=INK;c.lineWidth=1;line(x0,ry,mix(x0,x1,ka),ry);
+  c.font='500 18px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='top';
+  for(let i=0;i<=60*ka;i++){const x=x0+(x1-x0)*i/60,h=i%10===0?28:i%5===0?18:10;line(x,ry,x,ry-h);if(i%10===0)c.fillText(String(i),x,ry+10)}
+  c.globalAlpha=1;
+}
+DRAW.standard=g=>{
+  const t=g.lt;s3Rise(t);s3Proto(t);
+  starMap({a:ease(span(t,.8,1.6)),lit:[ease(span(t,1.2,2.2))]});
+  note('IPK · 国际千克原器（细节待核实）',span(t,9,10));
+  cue(t,1,5.2,['在八维模型里，INFP 的主导是 Fi：','用心里的理想，衡量每一件事。']);
+  cue(t,5.8,9.2,['「1 千克」，','曾经由一块金属来定义。']);
+  cue(t,9.8,13.4,['连它本身，','也和自己的复制品对不上。']);
+};
+// ---- 段 4 · 落差：Ne 分叉够到标准线；Si 调出旧话叠影；Te 只升到一半 ----
+DRAW.gap=g=>{
+  const t=g.lt,ly=V()?H*.22:H*.16,ox=W/2,oy=V()?H*.52:H*.62;
+  // 标准线（承接段 3）
+  c.strokeStyle=BRASS;c.lineWidth=2;glow(BRASS,18);line(W*.1,ly,W*.9,ly);noGlow();
+  c.font='500 20px '+MONO;c.fillStyle=BRASS;c.textAlign='right';c.textBaseline='alphabetic';c.fillText('STANDARD',W*.9,ly-14);
+  // 起点「那句话」
+  c.globalAlpha=ease(span(t,0,.8));c.fillStyle=INK;dot(ox,oy,6);
+  c.font='500 20px '+MONO;c.textAlign='center';c.textBaseline='top';c.fillText('那句话',ox,oy+18);c.globalAlpha=1;
+  // Ne：分叉出多个版本，最好的够到标准线
+  const bp=ease(span(t,.4,2.4));
+  [[-.3,.55],[-.16,.8],[.08,1],[.22,.7],[.34,.5]].forEach(([dx,h])=>{
+    const best=h===1,ex=mix(ox,ox+dx*W,bp),ey=mix(oy,mix(oy,ly,h),bp);
+    c.strokeStyle=best?BRASS:INK;c.fillStyle=c.strokeStyle;c.lineWidth=best?2:1.2;c.globalAlpha=best?.9:.45;
+    if(best)glow(BRASS,10);c.beginPath();c.moveTo(ox,oy);c.quadraticCurveTo(mix(ox,ex,.2),mix(oy,ey,.6),ex,ey);c.stroke();noGlow();
+    dot(ex,ey,best?5:3);
+    if(best&&bp>.95){c.font='500 20px '+MONO;c.textAlign='left';c.textBaseline='middle';c.fillText('Ne · 想到的',ex+14,ey+24)}
+  });
+  c.globalAlpha=1;
+  // Si：把那句话调出三次，叠影一次比一次淡、略有偏移
+  for(let k=0;k<3;k++){
+    const ka=ease(span(t,4+k*.8,4.8+k*.8));if(ka<=0)continue;
+    const x=ox-(k+1)*W*.11,y=oy+(k%2?8:-6);
+    c.globalAlpha=ka*(.6-k*.15);c.strokeStyle=INK;c.lineWidth=1;c.setLineDash([3,6]);line(ox-10,oy,x+10,y);c.setLineDash([]);
+    c.fillStyle=INK;dot(x,y,5);c.font='500 18px '+MONO;c.textAlign='center';c.textBaseline='top';c.fillText('那句话',x,y+16);
+  }
+  c.globalAlpha=ease(span(t,4,4.8));c.font='500 20px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='bottom';
+  c.fillText('Si · 调出比对',ox-W*.22,oy-30);c.globalAlpha=1;
+  // Te：说出口的那句只升到一半，墨蓝括号标出距离
+  const tp=ease(span(t,8,9.4)),ty=mix(oy,mix(oy,ly,.45),tp);
+  if(tp>0){c.strokeStyle=PAPER;c.lineWidth=4;line(ox,oy,ox,ty);
+    const ba=ease(span(t,9.2,10)),bx=ox+60;
+    c.globalAlpha=ba;c.strokeStyle=INK;c.lineWidth=2;line(bx,ty,bx,ly+6);line(bx,ty,bx-14,ty);line(bx,ly+6,bx-14,ly+6);
+    c.font='500 20px '+MONO;c.fillStyle=INK;c.textAlign='left';c.textBaseline='middle';c.fillText('Te · 想到 → 做到',bx+14,(ty+ly)/2);c.globalAlpha=1}
+  starMap({lit:[1,ease(span(t,.4,1.4)),ease(span(t,4,5)),.4*ease(span(t,8,9))]});
+  note('Ira Glass · 品味与能力的落差（出处待核实）',span(t,9,10));
+  cue(t,1,4.4,['Ne 让你先看见，','最好的那个版本。']);
+  cue(t,4.8,8.4,['Si 把说过的话，','一遍遍调出来比对。']);
+  cue(t,8.8,11.8,['Te 还不熟练，','想到和做到之间，就显得很远。']);
+};
+// ---- 段 5 · 压力下的阴影：星图移到中央放大，四颗阴影星依次亮红；标准线变红笔，划掉那句话 ----
+DRAW.shadow=g=>{
+  const t=g.lt,ly=V()?H*.22:H*.16,m=ease(span(t,0,1.6)),L0=mapLayout();
+  const mx=mix(L0.x,W/2,m),my=mix(L0.y,V()?H*.42:H*.45,m),mr=mix(L0.r,V()?230:200,m);
+  // 标准线：黄铜 → 红
+  const u=ease(span(t,9.6,10.6));c.lineWidth=2;
+  c.globalAlpha=1-u;c.strokeStyle=BRASS;glow(BRASS,18);line(W*.1,ly,W*.9,ly);
+  c.globalAlpha=u;c.strokeStyle=RED;glow(RED,18);line(W*.1,ly,W*.9,ly);noGlow();c.globalAlpha=1;
+  // 阴影星：随字幕依次亮红，轻微闪烁
+  const on=[3.6,4.6,7.1,8.1].map(s=>ease(span(t,s,s+.6))),fl=.8+.2*Math.sin(t*13);
+  starMap({x:mx,y:my,r:mr,fs:mix(16,28,m),lit:[1,1,1,.4,...on.map(k=>k*fl)],col:[BRASS,BRASS,BRASS,BRASS,RED,RED,RED,RED]});
+  // 那句话（段 1 的最后一条），被红笔划掉
+  const sa=ease(span(t,1,2)),oy=V()?H*.62:H*.75,s='「其实我一直想说……」';
+  c.globalAlpha=sa;c.font='400 34px '+SERIF;c.fillStyle=PAPER;c.textAlign='center';c.textBaseline='middle';c.fillText(s,W/2,oy);
+  const tw=c.measureText(s).width,k=ease(span(t,10.2,11));
+  if(k>0){c.globalAlpha=1;c.strokeStyle=RED;c.lineWidth=3;const x0=W/2-tw/2-10;line(x0,oy+2,x0+(tw+20)*k,oy-2)}
+  c.globalAlpha=1;
+  note('Beebe · 对立人格 / 女巫 / 骗子 / 恶魔（待核实）',span(t,3.6,4.4));
+  cue(t,.5,3.2,['累的时候，','暗着的四个功能会浮上来。']);
+  cue(t,3.5,6.7,['Fe 被期待绑住，','Ni 预言一定会搞砸。']);
+  cue(t,7,9.7,['Se 逃进感官里，','Ti 冷冷地拆解自己。']);
+  cue(t,10,11.9,['那条标准线，变成了红笔。']);
+};
+// ---- 小罗盘（段 7、10、11 共用）：指针指磁北，中心 Fi 光点 ----
+function miniCompass(x,y,r,a=1){
+  if(a<=0)return;const an=-Math.PI/2-11*Math.PI/180,ux=Math.cos(an),uy=Math.sin(an);
+  c.globalAlpha=a;c.strokeStyle=INK;c.lineWidth=1.2;circle(x,y,r);circle(x,y,r*.82);c.lineWidth=1;
+  for(let i=0;i<36;i++){const b=i/36*Math.PI*2,r2=i%9===0?r*.8:r*.9;line(x+Math.cos(b)*r,y+Math.sin(b)*r,x+Math.cos(b)*r2,y+Math.sin(b)*r2)}
+  c.strokeStyle=BRASS;c.lineWidth=Math.max(1.5,r/100);glow(BRASS,12);line(x-ux*r*.6,y-uy*r*.6,x+ux*r*.78,y+uy*r*.78);noGlow();
+  c.fillStyle=BRASS;dot(x,y,Math.max(3,r/40));c.globalAlpha=1;
+}
+// ---- 段 7 · 主导与辅助：罗盘退到角落；Fi–Ne 连线；Ne 的分叉只留一条，落成第一个节点 ----
+DRAW.hero=g=>{
+  const t=g.lt,m=ease(span(t,0,1.6)),C=s6L();
+  miniCompass(mix(C.cx,W*.18,m),mix(C.cy,H*.165,m),mix(C.R,56,m));
+  const ne=ease(span(t,6,7)),L={x:W/2,y:V()?H*.38:H*.4,r:V()?190:170};
+  starMap({...L,a:ease(span(t,1,2.2)),fs:24,lit:[1,ne],links:[[0,1,ne*.8]]});
+  // 航线
+  const yL=V()?H*.635:H*.75,ca=ease(span(t,2,3.2));
+  if(ca>0){c.globalAlpha=.5*ca;c.strokeStyle=BRASS;c.lineWidth=1.5;c.setLineDash([10,8]);line(W*.12,yL,mix(W*.12,W*.88,ca),yL);c.setLineDash([]);
+    c.font='500 20px '+MONO;c.fillStyle=BRASS;c.textAlign='left';c.textBaseline='bottom';c.fillText('COURSE 349°',W*.12,yL-12);c.globalAlpha=1}
+  // Ne 从自己的星位分叉，落向航线；只留一条
+  const [ox,oy]=starPos(1,{...L}),bp=ease(span(t,7,8.6)),fo=1-ease(span(t,9.2,10.2)),pick=1;
+  [.16,.32,.5,.68,.84].forEach((fx,i)=>{
+    const keep=i===pick,a=keep?1:fo;if(bp<=0||a<=0)return;
+    const ex=mix(ox,W*fx,bp),ey=mix(oy,yL,bp);
+    c.globalAlpha=(keep?.9:.45)*a;c.strokeStyle=keep?BRASS:INK;c.lineWidth=keep?2:1.2;
+    c.beginPath();c.moveTo(ox,oy);c.quadraticCurveTo(mix(ox,ex,.7),mix(oy,ey,.2),ex,ey);c.stroke();
+  });
+  c.globalAlpha=1;
+  // 第一个完成节点
+  const na=ease(span(t,10,10.8));
+  if(na>0){c.globalAlpha=na;c.fillStyle=BRASS;glow(BRASS,24);dot(W*.32,yL,9);noGlow();
+    c.font='500 20px '+MONO;c.textAlign='center';c.textBaseline='top';c.fillText('01',W*.32,yL+18);c.globalAlpha=1}
+  note('Beebe · 主导「英雄」/ 辅助「好父母」（待核实）',span(t,11,12));
+  cue(t,1,5.4,['Fi 的标准没有变，','只是从打分，变成了指路。']);
+  cue(t,6,10.4,['Ne 的那么多可能，','可以只落到一次尝试上。']);
+  cue(t,11,16.4,['在这个框架里，辅助功能','帮主导把方向带到外面。']);
+};
+// ---- 段 8 · 第三与劣势：Si 的旧影收拢成锚；Te 亮起，落成第二个节点 ----
+DRAW.tertiary=g=>{
+  const t=g.lt,L={x:W/2,y:V()?H*.38:H*.4,r:V()?190:170},yL=V()?H*.635:H*.75,ax=W*.14;
+  miniCompass(W*.18,H*.165,56);
+  const si=ease(span(t,.6,1.8)),te=mix(.4,1,ease(span(t,6,7.5))),tl=ease(span(t,7,8));
+  starMap({...L,fs:24,lit:[1,1,si,te],links:[[0,1,.8],[0,2,si*.6],[0,3,tl*.6]]});
+  // 航线与节点 01（承接段 7）
+  c.globalAlpha=.5;c.strokeStyle=BRASS;c.lineWidth=1.5;c.setLineDash([10,8]);line(W*.12,yL,W*.88,yL);c.setLineDash([]);
+  c.font='500 20px '+MONO;c.fillStyle=BRASS;c.textAlign='right';c.textBaseline='bottom';c.fillText('COURSE 349°',W*.88,yL-12);
+  c.globalAlpha=1;glow(BRASS,24);dot(W*.32,yL,9);noGlow();
+  c.font='500 20px '+MONO;c.textAlign='center';c.textBaseline='top';c.fillText('01',W*.32,yL+18);
+  // Si：三个旧影从 Si 星飞向起点，收拢成锚
+  const [sx,sy]=starPos(2,L);
+  for(let k=0;k<3;k++){
+    const p=ease(span(t,2+k*.3,4+k*.3));if(p<=0||p>=1)continue;
+    const x=mix(sx-40+k*30,ax,p),y=mix(sy+(k-1)*40,yL,p);
+    c.globalAlpha=(1-p)*.7;c.fillStyle=INK;dot(x,y,5);
+    c.font='500 18px '+MONO;c.textAlign='center';c.textBaseline='top';c.fillText('那句话',x,y+14);
+  }
+  const aa=ease(span(t,3.8,4.8));
+  if(aa>0){c.globalAlpha=aa;c.strokeStyle=BRASS;c.lineWidth=2;glow(BRASS,14*aa);
+    circle(ax,yL,6);line(ax,yL+6,ax,yL+58);line(ax-16,yL+20,ax+16,yL+20);
+    c.beginPath();c.arc(ax,yL+38,20,.15*Math.PI,.85*Math.PI);c.stroke();noGlow();
+    c.font='500 20px '+MONO;c.fillStyle=BRASS;c.textAlign='left';c.textBaseline='middle';c.fillText('Si · 锚',ax+30,yL+40)}
+  // Te：从星位连出，落成节点 02
+  const [tx,ty]=starPos(3,L),nx=W*.52,lp=ease(span(t,7.4,8.6));
+  if(lp>0){c.globalAlpha=.8;c.strokeStyle=BRASS;c.lineWidth=1.5;line(tx,ty,mix(tx,nx,lp),mix(ty,yL,lp))}
+  const n2=ease(span(t,8.4,9.2));
+  if(n2>0){c.globalAlpha=n2;c.fillStyle=BRASS;glow(BRASS,24);dot(nx,yL,9);noGlow();
+    c.font='500 20px '+MONO;c.textAlign='center';c.textBaseline='top';c.fillText('02',nx,yL+18)}
+  c.globalAlpha=1;
+  note('Beebe · 劣势「阿尼玛/阿尼姆斯」（待核实）',span(t,11,12));
+  cue(t,1,5.4,['Si 记得什么对你真正重要，','不只是用来翻旧账。']);
+  cue(t,6,10.4,['Te 不是敌人，','它只是还不熟练。']);
+  cue(t,11,16.4,['在这个框架里，劣势功能','常被描述为一扇门，而不是缺陷。']);
+};
+// ---- 段 9 · 阴影的另一面：四颗阴影星先闪红、再转黄铜，连向 Fi；最后八颗全亮 ----
+DRAW.shadowLit=g=>{
+  const t=g.lt,L={x:W/2,y:V()?H*.4:H*.42,r:V()?230:200},yL=V()?H*.635:H*.75;
+  miniCompass(W*.18,H*.165,56);
+  // 航线与节点（承接段 8，压暗）
+  c.globalAlpha=.3;c.strokeStyle=BRASS;c.lineWidth=1.5;c.setLineDash([10,8]);line(W*.12,yL,W*.88,yL);c.setLineDash([]);
+  c.fillStyle=BRASS;[[.32,'01'],[.52,'02']].forEach(([fx,s])=>{dot(W*fx,yL,8);c.font='500 20px '+MONO;c.textAlign='center';c.textBaseline='top';c.fillText(s,W*fx,yL+18)});
+  c.globalAlpha=1;
+  // 阴影星：每颗先闪红 0.5s，再转黄铜
+  const T0=[4.5,8,11,14],on=T0.map(s=>ease(span(t,s,s+.5))),col=[BRASS,BRASS,BRASS,BRASS];
+  T0.forEach((s,i)=>col.push(t<s+.5?RED:BRASS));
+  const lk=T0.map((s,i)=>[0,4+i,.5*ease(span(t,s+.5,s+1.5))]);
+  starMap({...L,fs:26,lit:[1,1,1,1,...on],col,links:[[0,1,.8],[0,2,.6],[0,3,.6],...lk]});
+  // 八颗全亮：外圈一圈淡光
+  const fa=ease(span(t,17,18.2));
+  if(fa>0){c.globalAlpha=fa*.5;c.strokeStyle=BRASS;c.lineWidth=2;glow(BRASS,30*fa);circle(L.x,L.y,L.r*1.32);noGlow();c.globalAlpha=1}
+  note('Beebe · 阴影位置的正面描述（措辞待核实）',span(t,4.5,5.3));
+  cue(t,.8,4.2,['被接纳的阴影，','常被描述为另一种能力。']);
+  cue(t,4.5,7.6,['Fe 能感受别人，','不必失去自己。']);
+  cue(t,8,10.6,['Ni 能看见更远的方向。']);
+  cue(t,11,13.6,['Se 能把你拉回此刻。']);
+  cue(t,14,16.6,['Ti 能看清，','那些苛责站不住。']);
+  cue(t,17,19.4,['八个位置，都是你。']);
+};
+// ---- 段 10 · 反复：之字形航迹一段段画出；中途闪回成尺子（变红），随即继续 ----
+DRAW.tack=g=>{
+  const t=g.lt,st=W/12,cx=W/2,top=V()?H*.24:H*.16,bot=V()?H*.64:H*.72,amp=V()?W*.24:H*.3,ga=ease(span(t,0,1));
+  c.strokeStyle=INK;c.lineWidth=1;c.globalAlpha=.12*ga;
+  for(let x=st/2;x<W;x+=st)line(x,0,x,H);for(let y=st/2;y<H;y+=st)line(0,y,W,y);
+  miniCompass(W*.18,H*.165,56);
+  // 风向与「正对风」
+  c.strokeStyle=INK;c.lineWidth=1.2;c.globalAlpha=.6*ga;
+  [W*.14,W*.86].forEach(x=>{for(let j=0;j<2;j++){const y0=top-20+j*70,y1=y0+44;line(x,y0,x,y1);line(x-7,y1-11,x,y1);line(x+7,y1-11,x,y1)}});
+  c.font='500 20px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='alphabetic';c.fillText('WIND',W*.86,top-34);
+  c.globalAlpha=.5*ga;c.setLineDash([6,9]);line(cx,bot,cx,top);c.setLineDash([]);
+  c.textAlign='left';c.fillText('× 正对风',cx+12,(top+bot)/2);c.globalAlpha=1;
+  // 航迹：匀速推进；f 为已走过的段数
+  const n=6,r=rng(10),pts=[];
+  for(let i=0;i<=n;i++){const y=bot-(bot-top)*i/n,x=(i===0||i===n)?cx:cx+(i%2?1:-1)*amp*(.8+r()*.3);pts.push([x,y])}
+  const f=span(t,1,16.5)*n,rd=Math.min(span(t,3.6,4),1-span(t,4.8,5.2));
+  let hx=pts[0][0],hy=pts[0][1];
+  c.beginPath();c.moveTo(hx,hy);
+  for(let i=1;i<=n;i++){const k=clamp(f-(i-1));if(k<=0)break;hx=mix(pts[i-1][0],pts[i][0],k);hy=mix(pts[i-1][1],pts[i][1],k);c.lineTo(hx,hy)}
+  c.lineWidth=2.5;c.strokeStyle=BRASS;glow(BRASS,14);c.stroke();noGlow();
+  if(rd>0){c.globalAlpha=rd;c.strokeStyle=RED;glow(RED,14);c.stroke();noGlow();c.globalAlpha=1}
+  c.lineWidth=1.5;c.strokeStyle=BRASS;for(let i=1;i<n;i++)if(f>=i)circle(pts[i][0],pts[i][1],6);
+  c.fillStyle=PAPER;dot(hx,hy,6);
+  // 闪回：船所在处出现一把刻度尺
+  if(rd>0){c.globalAlpha=rd;c.strokeStyle=RED;c.lineWidth=1.5;line(W*.1,hy,W*.9,hy);c.lineWidth=1;
+    for(let i=0;i<=40;i++){const x=W*.1+W*.8*i/40,h=i%10===0?24:i%5===0?14:8;line(x,hy,x,hy-h)}c.globalAlpha=1}
+  // 起点海岸与目的地 Fi
+  c.strokeStyle=INK;c.lineWidth=1.5;c.globalAlpha=.8*ga;line(W*.08,bot+34,W*.92,bot+34);circle(cx,bot,10);
+  c.font='500 20px '+MONO;c.fillStyle=INK;c.textAlign='left';c.textBaseline='middle';c.fillText('PORT',cx+22,bot);
+  c.globalAlpha=ga;c.fillStyle=BRASS;glow(BRASS,30);dot(cx,top,9);noGlow();c.globalAlpha=1;
+  note('迎风换舷 · tacking（待核实）',span(t,6,6.8));
+  cue(t,1,5.4,['成长不是一条直线。','你还会回到尺子那里。']);
+  cue(t,6,10.4,['帆船没法正对着风开，','只能一段一段地换舷。']);
+  cue(t,11,17.4,['每一段看起来都偏了，','合起来是在前进。']);
+};
+// ---- 段 11 · 结尾：不再往上翻；打一句、删掉、重写、发出；罗盘留下 ----
+const D1='其实那天我想说的是',D2='今天也很开心。嗯';
+DRAW.end=g=>{
+  const t=g.lt,a=ease(span(t,0,.8))*(1-ease(span(t,14,16)));
+  // 输入框里的文字：打字 → 停顿 → 删除 → 重写 → 发出
+  let s='';
+  if(t>=4&&t<6.2)s=D1.slice(0,Math.floor(D1.length*span(t,4,5.5)));
+  else if(t>=6.2&&t<6.8)s=D1.slice(0,Math.ceil(D1.length*(1-span(t,6.2,6.8))));
+  else if(t>=6.8&&t<8.4)s=D2.slice(0,Math.floor(D2.length*span(t,6.8,8.2)));
+  const msgs=t>=8.4?[...CHAT,[1,D2,'23:58']]:CHAT;
+  const r=drawChat({a,msgs,hi:0});
+  if(a>0){
+    const ix=r.x+24,iy=r.by+28,iw=r.pw-48;
+    c.globalAlpha=a*.6;c.strokeStyle=INK;c.lineWidth=1;c.beginPath();c.roundRect(ix,iy,iw,56,28);c.stroke();
+    c.globalAlpha=a;c.font='400 28px '+SERIF;c.fillStyle=PAPER;c.textAlign='left';c.textBaseline='middle';c.fillText(s,ix+28,iy+28);
+    if(t>=3.6&&t<8.4&&Math.floor(t*2)%2===0){const cx2=ix+28+c.measureText(s).width+4;c.strokeStyle=BRASS;c.lineWidth=2;line(cx2,iy+14,cx2,iy+42)}
+    c.globalAlpha=1;
+  }
+  // 小罗盘：先在手机右下外侧，14s 后移到中央放大
+  const m=ease(span(t,14,17));
+  miniCompass(mix(W*.86,W/2,m),mix(V()?H*.655:H*.8,V()?H*.4:H*.42,m),mix(40,160,m),ease(span(t,.8,1.8)));
+  // 片尾说明【系列共享】
+  const na=ease(span(t,18,19))*.75;
+  if(na>0){c.globalAlpha=na;c.font='400 26px '+SERIF;c.fillStyle=PAPER;c.textAlign='center';c.textBaseline='middle';
+    ['八维与 MBTI 是一套自我觉察的语言，','不是诊断，也不是科学定论。','MBTI 的信度与效度在心理学界存在争议。'].forEach((l,i)=>c.fillText(l,W/2,(V()?H*.66:H*.72)+i*44));
+    c.globalAlpha=1}
+  cue(t,1,4,['你没有再往上翻。']);
+  cue(t,9,13,['那句话不够好，','但它是你在意的。']);
+  cue(t,13.5,17.4,['你的罗盘，现在指向哪里？']);
+};
+// ---- 锚点覆盖：URL > 本地存储 ----
+const okA=a=>Array.isArray(a)&&a.length===SEG.length&&a.every((x,i)=>Number.isFinite(x)&&(i===0||x>a[i-1]));
+(function(){
+  let a=null;
+  if(q.get('anchors'))a=q.get('anchors').split(',').map(Number);
+  else try{a=JSON.parse(localStorage.getItem('infp-v2-anchors'))}catch(e){}
+  if(okA(a)){anchors=a;D=Math.max(172,a.at(-1)+26)}
+})();
+
+// ---- 音频主时钟：有音轨时以 audio.currentTime 为准，否则用系统时钟 ----
+const au=document.getElementById('audio'),btn=document.getElementById('play'),stEl=document.getElementById('state');
+let playing=false,hasAudio=false,t0=0,n0=0;
+const clock=()=>hasAudio?au.currentTime:n0+(performance.now()-t0)/1000;
+function tick(){
+  if(!playing)return;
+  const t=clock();
+  if(hasAudio)au.volume=1-span(t,FADE[0],FADE[1]);
+  if(t>=D){pause();renderAt(D);return}
+  renderAt(t);requestAnimationFrame(tick);
+}
+function play(){
+  if(now>=D)now=0;playing=true;btn.textContent='暂停';
+  if(hasAudio){au.currentTime=now;au.play().catch(()=>{})}else{n0=now;t0=performance.now()}
+  requestAnimationFrame(tick);
+}
+function pause(){playing=false;btn.textContent='播放';if(hasAudio)au.pause()}
+btn.onclick=()=>playing?pause():play();
+document.getElementById('seek').oninput=e=>{const t=+e.target.value;if(hasAudio)au.currentTime=t;n0=t;t0=performance.now();renderAt(t)};
+document.getElementById('audioFile').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;pause();
+  au.src=URL.createObjectURL(f);hasAudio=true;stEl.textContent='音轨：'+f.name;
+};
+
+// ---- 校准：播放中按 M 标记下一段起点，⌫ 撤销；导出后写入本地存储 ----
+let cal=null;const calEl=document.getElementById('cal');
+function calShow(){
+  calEl.textContent=SEG.map((s,i)=>`${String(i+1).padStart(2,'0')} ${s[0].padEnd(10)} ${cal[i]==null?'—':cal[i].toFixed(2)}`).join('\n')+'\n\nM 标记下一段 · ⌫ 撤销 · 再按「校准」退出';
+}
+document.getElementById('calBtn').onclick=()=>{
+  if(cal){cal=null;calEl.style.display='none';return}
+  cal=[0];calEl.style.display='block';calShow();pause();renderAt(0);play();
+};
+document.getElementById('expBtn').onclick=()=>{
+  const a=cal&&cal.length===SEG.length?cal.map(x=>+x.toFixed(2)):anchors;
+  localStorage.setItem('infp-v2-anchors',JSON.stringify(a));anchors=a;D=Math.max(172,a.at(-1)+26);
+  calEl.style.display='block';
+  calEl.textContent='锚点已存入本地存储：\n'+JSON.stringify(a)+'\n\nURL 参数：\n?anchors='+a.join(',');
+};
+addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();btn.click()}
+  else if(cal&&e.code==='KeyM'&&cal.length<SEG.length&&now>cal.at(-1)){cal.push(+now.toFixed(2));calShow()}
+  else if(cal&&e.code==='Backspace'&&cal.length>1){e.preventDefault();cal.pop();calShow()}
+});
+// ---- 布局 ----
+let now=0;
+function layout(){
+  [W,H]=V()?[1080,1920]:[1920,1080];
+  if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H}
+  const ui=document.body.classList.contains('capture')?0:44;
+  const k=Math.min(innerWidth/W,(innerHeight-ui)/H);
+  const st=document.getElementById('stage');
+  st.style.transform=`scale(${k}) translate(-50%,-50%)`;st.style.top=`calc(50% - ${ui/2}px)`;
+  document.getElementById('ratio').textContent=V()?'9:16':'16:9';
+}
+// 未实现的段：居中光点 + 段名
+function placeholder(g){
+  const y=V()?H*.43:H*.45;c.fillStyle=BRASS;glow(BRASS,20);dot(W/2,y,8+3*Math.sin(g.lt*2));noGlow();
+  c.font='500 26px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='top';c.globalAlpha=.5;
+  c.fillText(String(g.i+1).padStart(2,'0')+' · '+NAMES[g.i],W/2,y+60);c.globalAlpha=1;
+}
+function reset(){c.setTransform(1,0,0,1,0,0);c.globalAlpha=1;noGlow();c.setLineDash([]);c.textBaseline='alphabetic'}
+function drawSeg(g){reset();bg();(DRAW[g.id]||placeholder)(g);reset()}
+
+// ---- 转场：上一段的末帧画到离屏画布，0.8s 交叉淡化 ----
+const XF=.8;let xc=null;
+function prevFrame(g){
+  if(!xc)xc=document.createElement('canvas');
+  if(xc.width!==W||xc.height!==H){xc.width=W;xc.height=H}
+  const main=c;c=xc.getContext('2d');
+  try{const i=g.i-1,s=anchors[i];drawSeg({i,id:SEG[i][0],s,e:g.s,lt:NOM[i],p:1})}finally{c=main}
+}
+
+// ---- 渲染：状态只由 t 决定，截帧一致 ----
+function renderAt(t){
+  now=clamp(Number(t)||0,0,D);const g=seg(now);
+  drawSeg(g);
+  if(g.i>0&&g.lt<XF){prevFrame(g);c.globalAlpha=1-ease(g.lt/XF);c.drawImage(xc,0,0);c.globalAlpha=1}
+  const fo=span(now,D-3,D);if(fo>0){c.fillStyle=BG;c.globalAlpha=fo;c.fillRect(0,0,W,H);c.globalAlpha=1}
+  const sk=document.getElementById('seek');sk.max=D;sk.value=now;
+  const m=Math.floor(now/60),s=Math.floor(now%60);
+  document.getElementById('time').textContent=`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} · ${String(g.i+1).padStart(2,'0')} ${NAMES[g.i]}`;
+}
+window.renderAt=renderAt;
+
+// ---- 启动：?t= 指定时刻；字体就绪后置 window.ready ----
+addEventListener('resize',()=>{layout();renderAt(now)});
+document.getElementById('ratio').onclick=()=>{RATIO=V()?'16x9':'9x16';layout();renderAt(now)};
+// window.ready：字体就绪、首帧画完后兑现的 Promise
+window.ready=(document.fonts?document.fonts.ready:Promise.resolve()).then(()=>{
+  layout();renderAt(q.has('t')?+q.get('t'):0);
+});
+</script>
+</body>
+</html>

@@ -79,7 +79,8 @@ tools/                         预览、截帧、视频合成工具（目前为�
 | `agent-skill-explainer` | 谁在行动？Agent / Skill / Tool | 交互网页（独立探索） | 可用；计划改为自动短片 |
 | `i-am-not-sad` | 《我不难过》歌曲动画 | song-story | 旧版草稿可播放；正在重建任务书与分镜，时间需按歌词时间戳校正 |
 | `dice-probability` | 骰子与概率 | knowledge | 仅立项，无分镜与代码 |
-| `infp-growth` | INFP 的成长路线（MBTI 系列第 1 部） | knowledge · web · 9:16 + 16:9 | 任务书、依据、分镜已完成；待写代码，音乐由用户用 Suno 生成 |
+| `spotlight-effect` | 聚光灯效应（心理学系列第 1 部） | knowledge · web · 9:16 | 立项中：任务书、依据清单已建；核心数字待核实；大纲与风格帧未做。音乐见 `assets/vibe-zhishi-dashang.md`，不入库 |
+| `infp-growth` | INFP 成长指南（MBTI 系列第 1 部） | knowledge · web · 9:16 + 16:9 | v2 全片 11 段已实现（`src/v2.html`，9:16）；锚点待校准，16:9 待检查，部分事实待核实；音乐为用户 Suno 生成，未入库 |
 
 ## 工程约定摘要（web 载体）
 

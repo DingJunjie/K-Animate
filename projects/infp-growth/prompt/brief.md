@@ -135,7 +135,7 @@ vocals, singing, choir, rap, EDM, heavy drums, distorted guitar
 
 - 遵循 `prompt/core/production.md`、`prompt/core/framing.md` 与 `prompt/media/web.md`；单文件 HTML，Canvas 2D + DOM 字幕，无构建。
 - 多画幅策略：重新构图。9:16 与 16:9 共享时间轴与状态，只切换布局；用 `?ratio=9x16` / `?ratio=16x9` 切换，默认 9:16。
-- 9:16 安全区（暂定）：顶部 12%、底部 20% 避让平台界面；字幕位于 62%–76% 高度。发布前按实际界面复核。
+- 9:16 安全区（暂定）：顶部 12%、底部 20% 避让平台界面；字幕位于 66%–79% 高度（v2 风格帧确认）。发布前按实际界面复核。
 - 支持 `renderAt(t)` / `window.ready` / `?capture&t=`。
 - 支持本地载入 Suno 音频，以音频时间为主时钟；提供校准模式，用户边听边按键标记段落起点，页面输出新的锚点表。
 - 音频由用户生成并持有，入库前确认 Suno 会员条款下的使用权。

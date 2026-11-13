@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>INFP v2 · 风格帧</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#05080e}
+#stage{position:absolute;left:50%;top:50%;transform-origin:0 0}
+#cv{display:block}
+#ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;padding:8px 12px;background:#0e1624e6;font:12px Menlo,monospace;z-index:9}
+#ui button{background:#1c2a40;color:#ddd;border:1px solid #ffffff33;border-radius:4px;padding:5px 9px;cursor:pointer}
+#ui button.on{border-color:#C9A45C;color:#C9A45C}
+.capture #ui{display:none}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="ui">
+  <button data-f="3">段 3 · 标准器</button>
+  <button data-f="6">段 6 · 尺子→罗盘</button>
+  <button data-f="10">段 10 · 之字形航迹</button>
+  <button id="ratio">9:16</button>
+</div>
+<script>
+// ---- 色板 ----
+const BG='#0E1624',INK='#9FB1C9',BRASS='#C9A45C',RED='#C8553D';
+const SERIF='"Noto Serif SC","Songti SC","STSong",serif',MONO='"IBM Plex Mono",Menlo,monospace';
+
+// ---- 参数：?f=3|6|10  ?ratio=9x16|16x9  ?capture ----
+const q=new URLSearchParams(location.search);
+if(q.has('capture'))document.body.classList.add('capture');
+let F=['3','6','10'].includes(q.get('f'))?q.get('f'):'3';
+let RATIO=q.get('ratio')==='16x9'?'16x9':'9x16';
+const cv=document.getElementById('cv'),c=cv.getContext('2d');
+let W,H;const V=()=>RATIO==='9x16';
+
+// ---- 工具 ----
+function rng(s){return()=>{s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function line(x1,y1,x2,y2){c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke()}
+function circle(x,y,r){c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.stroke()}
+function glow(col,blur){c.shadowColor=col;c.shadowBlur=blur}
+function noGlow(){c.shadowBlur=0}
+
+// 背景：墨蓝底 + 暗角 + 雕版颗粒
+function bg(seed){
+  c.fillStyle=BG;c.fillRect(0,0,W,H);
+  const g=c.createRadialGradient(W/2,H*.4,0,W/2,H*.4,Math.max(W,H)*.75);
+  g.addColorStop(0,'#16223500');g.addColorStop(1,'#03060bcc');
+  c.fillStyle=g;c.fillRect(0,0,W,H);
+  const r=rng(seed);c.fillStyle='#ffffff';
+  for(let i=0;i<2600;i++){c.globalAlpha=r()*.05;c.fillRect(r()*W,r()*H,1.2,1.2)}
+  c.globalAlpha=1;
+}
+// 字幕：9:16 位于 62%–76%；16:9 位于底部
+function sub(rows){
+  const fs=V()?50:40,lh=fs*1.55,bottom=V()?H*.76+50:H*.9;
+  c.font='600 '+fs+'px '+SERIF;c.textAlign='center';c.textBaseline='alphabetic';c.fillStyle='#E8E2D4';
+  rows.forEach((s,i)=>c.fillText(s,W/2,bottom-(rows.length-1-i)*lh));
+}
+// 角标：等宽小字，标注待核实
+function note(s){
+  c.font='500 22px '+MONO;c.textAlign='left';c.textBaseline='top';
+  c.fillStyle=INK;c.globalAlpha=.6;c.fillText(s,V()?W*.08:W*.05,V()?H*.13:H*.07);c.globalAlpha=1;
+}
+
+// ---- 各帧（分段补充）----
+const FRAMES={};
+// 段 3 · 标准器：玻璃罩里的原器、两侧复制品、标准线、刻度尺
+FRAMES['3']=()=>{
+  const cx=W/2,cy=V()?H*.43:H*.42,s=V()?1:.8;
+  const ly=V()?H*.22:H*.16;
+  c.strokeStyle=BRASS;c.lineWidth=2;glow(BRASS,18);line(W*.1,ly,W*.9,ly);noGlow();
+  c.font='500 20px '+MONO;c.fillStyle=BRASS;c.textAlign='right';c.textBaseline='alphabetic';
+  c.fillText('STANDARD',W*.9,ly-14);
+  // 玻璃罩
+  const jw=170*s,jh=300*s,by=cy+jh/2,top=cy-jh/2+jw;
+  c.strokeStyle=INK;c.lineWidth=1.5;
+  c.beginPath();c.moveTo(cx-jw,by);c.lineTo(cx-jw,top);c.arc(cx,top,jw,Math.PI,0);c.lineTo(cx+jw,by);c.stroke();
+  line(cx-jw*1.3,by,cx+jw*1.3,by);
+  // 原器：黄铜圆柱
+  const pw=60*s,ph=90*s;
+  c.strokeStyle=BRASS;c.lineWidth=2;glow(BRASS,12);
+  line(cx-pw/2,by,cx-pw/2,by-ph);line(cx+pw/2,by,cx+pw/2,by-ph);
+  c.beginPath();c.ellipse(cx,by-ph,pw/2,pw/7,0,0,Math.PI*2);c.stroke();
+  c.beginPath();c.ellipse(cx,by,pw/2,pw/7,0,0,Math.PI);c.stroke();noGlow();
+  // 复制品 + 漂移标注
+  c.strokeStyle=INK;c.lineWidth=1.2;c.globalAlpha=.75;
+  [-1,1].forEach(d=>{
+    const x=cx+d*W*.3,w=pw*.7,h=ph*.7;
+    line(x-w/2,by,x-w/2,by-h);line(x+w/2,by,x+w/2,by-h);line(x-w*.8,by,x+w*.8,by);
+    c.beginPath();c.ellipse(x,by-h,w/2,w/7,0,0,Math.PI*2);c.stroke();
+    c.setLineDash([4,7]);line(x-d*w*.7,by-h*.5,cx+d*jw*1.05,by-h*.5);c.setLineDash([]);
+    c.font='500 22px '+MONO;c.fillStyle=INK;c.textAlign='center';c.fillText('Δ ≈ 50 μg',x,by+44*s);
+  });
+  c.globalAlpha=1;
+  // 刻度尺
+  const ry=V()?H*.635:by+130*s,x0=W*.12,x1=W*.88;
+  c.strokeStyle=INK;c.lineWidth=1;line(x0,ry,x1,ry);
+  c.font='500 18px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='top';c.globalAlpha=.7;
+  for(let i=0;i<=60;i++){const x=x0+(x1-x0)*i/60,h=i%10===0?28:i%5===0?18:10;line(x,ry,x,ry-h);if(i%10===0)c.fillText(String(i),x,ry+10)}
+  c.globalAlpha=1;c.textBaseline='alphabetic';
+  note('IPK · 1889–2019 · 漂移约 50 μg（待核实）');
+  sub(['连「1 千克」本身，','也和它的复制品对不上。']);
+};
+// 段 6 · 尺子变罗盘：标准线成为指针，指磁北而非正北
+FRAMES['6']=()=>{
+  const cx=W/2,cy=V()?H*.43:H*.45,R=V()?300:260,st=W/12;
+  // 海图网格
+  c.strokeStyle=INK;c.lineWidth=1;c.globalAlpha=.12;
+  for(let x=st/2;x<W;x+=st)line(x,0,x,H);
+  for(let y=st/2;y<H;y+=st)line(0,y,W,y);
+  c.globalAlpha=1;
+  // 罗盘外圈与刻度
+  c.strokeStyle=INK;c.lineWidth=1.5;circle(cx,cy,R);circle(cx,cy,R*.82);
+  c.lineWidth=1;
+  for(let i=0;i<72;i++){const a=i/72*Math.PI*2,r2=i%18===0?R*.84:i%2===0?R*.9:R*.94;line(cx+Math.cos(a)*R,cy+Math.sin(a)*R,cx+Math.cos(a)*r2,cy+Math.sin(a)*r2)}
+  c.font='500 26px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='middle';
+  [['N',-90],['E',0],['S',90],['W',180]].forEach(([s,d])=>{const a=d*Math.PI/180;c.fillText(s,cx+Math.cos(a)*R*1.13,cy+Math.sin(a)*R*1.13)});
+  // 正北：虚线
+  c.setLineDash([6,8]);line(cx,cy,cx,cy-R*1.02);c.setLineDash([]);
+  // 指针 = 原来的标准线，指向磁北
+  const dec=-11*Math.PI/180,a=-Math.PI/2+dec,ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux;
+  c.strokeStyle=BRASS;c.lineWidth=3;glow(BRASS,18);
+  line(cx-ux*R*.6,cy-uy*R*.6,cx+ux*R*.78,cy+uy*R*.78);noGlow();
+  // 指针上残留的尺子刻度，向指尖渐隐
+  c.lineWidth=1.5;
+  for(let i=1;i<12;i++){const k=i/12,d=-R*.6+k*R*1.38,px=cx+ux*d,py=cy+uy*d,h=(i%4===0?14:7);c.globalAlpha=.8*(1-k);line(px-nx*h,py-ny*h,px+nx*h,py+ny*h)}
+  c.globalAlpha=1;
+  // 磁偏角弧
+  c.lineWidth=1;c.beginPath();c.arc(cx,cy,R*.45,a,-Math.PI/2);c.stroke();
+  const la=-Math.PI/2+dec/2;c.font='italic 28px '+SERIF;c.fillStyle=BRASS;
+  c.fillText('δ',cx+Math.cos(la)*R*.55,cy+Math.sin(la)*R*.55);
+  // 中心光点（Fi）
+  glow(BRASS,24);c.beginPath();c.arc(cx,cy,7,0,Math.PI*2);c.fill();noGlow();
+  // 海图航线：接住字幕上方的空隙
+  if(V()){const y=H*.64,x0=W*.12,x1=W*.88;
+    c.strokeStyle=BRASS;c.lineWidth=1.5;c.globalAlpha=.7;
+    c.setLineDash([10,8]);line(x0,y,x1,y);c.setLineDash([]);
+    line(x1-14,y-8,x1,y);line(x1-14,y+8,x1,y);
+    c.font='500 20px '+MONO;c.fillStyle=BRASS;c.textAlign='left';c.textBaseline='bottom';
+    c.fillText('COURSE 349°',x0,y-12);c.globalAlpha=1;c.textBaseline='alphabetic'}
+  note('磁偏角 δ · 各地不同、逐年变化（待核实）');
+  sub(['罗盘从来不指正北。','指方向，不需要准。']);
+};
+// 段 10 · 之字形航迹：迎风换舷，每段都偏，合起来在前进
+FRAMES['10']=()=>{
+  const st=W/12,cx=W/2,top=V()?H*.24:H*.16,bot=V()?H*.64:H*.72,amp=V()?W*.24:H*.3;
+  c.strokeStyle=INK;c.lineWidth=1;c.globalAlpha=.12;
+  for(let x=st/2;x<W;x+=st)line(x,0,x,H);
+  for(let y=st/2;y<H;y+=st)line(0,y,W,y);
+  c.globalAlpha=1;
+  // 风向：从目的地方向吹来
+  c.strokeStyle=INK;c.lineWidth=1.2;c.globalAlpha=.6;
+  [W*.14,W*.86].forEach(x=>{for(let j=0;j<2;j++){const y0=top-20+j*70,y1=y0+44;line(x,y0,x,y1);line(x-7,y1-11,x,y1);line(x+7,y1-11,x,y1)}});
+  c.font='500 20px '+MONO;c.fillStyle=INK;c.textAlign='center';c.textBaseline='alphabetic';c.fillText('WIND',W*.86,top-34);
+  c.globalAlpha=1;
+  // 直线：正对风，走不通
+  c.setLineDash([6,9]);c.globalAlpha=.5;line(cx,bot,cx,top);c.setLineDash([]);
+  c.font='500 20px '+MONO;c.textAlign='left';c.fillText('× 正对风',cx+12,(top+bot)/2);c.globalAlpha=1;
+  // 之字形航迹
+  const n=6,r=rng(10),pts=[];
+  for(let i=0;i<=n;i++){const y=bot-(bot-top)*i/n,x=(i===0||i===n)?cx:cx+(i%2?1:-1)*amp*(.8+r()*.3);pts.push([x,y])}
+  c.strokeStyle=BRASS;c.lineWidth=2.5;glow(BRASS,14);
+  c.beginPath();pts.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.stroke();noGlow();
+  c.lineWidth=1.5;pts.slice(1,-1).forEach(([x,y])=>circle(x,y,6));
+  // 起点与目的地光点
+  c.strokeStyle=INK;circle(cx,bot,10);
+  c.fillStyle=BRASS;glow(BRASS,30);c.beginPath();c.arc(cx,top,9,0,Math.PI*2);c.fill();noGlow();
+  c.strokeStyle=BRASS;c.lineWidth=1;[0,1,2,3].forEach(k=>{const a=k*Math.PI/4;line(cx-Math.cos(a)*22,top-Math.sin(a)*22,cx+Math.cos(a)*22,top+Math.sin(a)*22)});
+  // 角落小罗盘（呼应段 6）
+  const kx=W*.86,ky=V()?H*.52:bot,kr=38,dec=-11*Math.PI/180;
+  c.strokeStyle=INK;c.lineWidth=1;circle(kx,ky,kr);
+  c.strokeStyle=BRASS;c.lineWidth=2;line(kx-Math.sin(dec)*kr*.8,ky+Math.cos(dec)*kr*.8,kx+Math.sin(dec)*kr*.8,ky-Math.cos(dec)*kr*.8);
+  // 海岸线 + 雕版阴影：起点港口，接住字幕上方
+  if(V()){const y0=bot+34,r2=rng(7),pts2=[];
+    for(let x=W*.08;x<=W*.92;x+=W/40)pts2.push([x,y0+(Math.abs(x-cx)<W*.06?-6:(r2()-.5)*10)]);
+    c.strokeStyle=INK;c.lineWidth=1.5;c.globalAlpha=.8;
+    c.beginPath();pts2.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.stroke();
+    c.lineWidth=1;c.globalAlpha=.35;
+    pts2.forEach(([x,y])=>{for(let k=0;k<3;k++)line(x+k*8,y+6+k*7,x+k*8+10,y+16+k*7)});
+    c.globalAlpha=.7;c.font='500 20px '+MONO;c.fillStyle=INK;c.textAlign='left';c.textBaseline='middle';
+    c.fillText('PORT',cx+22,bot);c.globalAlpha=1;c.textBaseline='alphabetic'}
+  note('迎风换舷 · tacking（待核实）');
+  sub(['每一段看起来都偏了，','合起来是在前进。']);
+};
+
+// ---- 渲染与切换 ----
+function render(){
+  [W,H]=V()?[1080,1920]:[1920,1080];cv.width=W;cv.height=H;
+  const ui=document.body.classList.contains('capture')?0:44;
+  const k=Math.min(innerWidth/W,(innerHeight-ui)/H);
+  const st=document.getElementById('stage');
+  st.style.transform=`scale(${k}) translate(-50%,-50%)`;st.style.top=`calc(50% - ${ui/2}px)`;
+  c.setTransform(1,0,0,1,0,0);bg(+F);
+  (FRAMES[F]||(()=>{}))();
+  document.querySelectorAll('[data-f]').forEach(b=>b.classList.toggle('on',b.dataset.f===F));
+  document.getElementById('ratio').textContent=V()?'9:16':'16:9';
+}
+document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{F=b.dataset.f;render()});
+document.getElementById('ratio').onclick=()=>{RATIO=V()?'16x9':'9x16';render()};
+addEventListener('resize',render);
+// window.ready：字体就绪、首帧画完后兑现的 Promise
+window.ready=(document.fonts?document.fonts.ready:Promise.resolve()).then(()=>{render()});
+</script>
+</body>
+</html>

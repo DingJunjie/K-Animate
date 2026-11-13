@@ -9,3 +9,7 @@ projects/*/assets/*.mp3
 projects/*/assets/*.wav
 projects/*/assets/*.m4a
 projects/*/assets/*.flac
+assets/*.mp3
+assets/*.wav
+assets/*.m4a
+assets/*.flac
